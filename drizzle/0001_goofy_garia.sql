@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX `products_xianyu_item_id_uq` ON `products` (`xianyu_item_id`);

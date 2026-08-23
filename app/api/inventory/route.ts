@@ -1,0 +1,3 @@
+import { getDb } from "../../../db";
+import { inventory } from "../../../db/schema";
+export async function POST(request:Request){try{const p=await request.json() as {productId?:number;secrets?:string};const productId=Number(p.productId),secrets=(p.secrets||"").split(/\r?\n/).map(x=>x.trim()).filter(Boolean);if(!productId||!secrets.length)return Response.json({error:"商品和卡密不能为空"},{status:400});await getDb().insert(inventory).values(secrets.map(secret=>({productId,secret})));return Response.json({added:secrets.length},{status:201})}catch(e){return Response.json({error:e instanceof Error?e.message:"导入失败"},{status:500})}}
