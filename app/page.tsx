@@ -504,6 +504,7 @@ function Listings({
           <option value="offline">已下架</option>
           <option value="sold">已售出</option>
           <option value="unknown">其他状态</option>
+          <option value="draft">草稿</option>
           <option value="queued">待发布</option>
           <option value="failed">发布失败</option>
         </select>
@@ -743,7 +744,9 @@ function Listings({
               >
                 修改
               </button>
-              {(product.status === "queued" || product.status === "failed") && (
+              {(product.status === "draft" ||
+                product.status === "queued" ||
+                product.status === "failed") && (
                 <button
                   className="ghost"
                   onClick={() => publishProduct(product)}
@@ -1311,6 +1314,7 @@ function Stat({
 }
 function Status({ value }: { value: string }) {
   const map: Record<string, string> = {
+    draft: "草稿",
     queued: "待发布",
     published: "在售",
     offline: "已下架",
