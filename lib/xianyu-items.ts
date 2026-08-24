@@ -140,12 +140,19 @@ export async function uploadListingImage(
 export async function publishListing(
   session: XianyuSession,
   input: ListingInput,
+  categoryReferenceItemId = "",
 ) {
   const images = await prepareImages(session, input.images);
   if (!images.length) throw new Error("至少需要一张有效商品图片");
   const [category, location] = await Promise.all([
     input.categoryMode === "manual" && input.categoryId
-      ? Promise.resolve(manualCategory(input))
+      ? categoryReferenceItemId
+        ? categoryFromReference(
+            session,
+            categoryReferenceItemId,
+            input.categoryId,
+          )
+        : Promise.resolve(manualCategory(input))
       : recommendCategory(session, input.title, images, input.skus.length > 0),
     getDefaultLocation(session),
   ]);
@@ -158,6 +165,25 @@ export async function publishListing(
   const itemId = String(raw.data?.itemId || "");
   if (!itemId) throw new Error("闲鱼发布成功响应中缺少商品编号");
   return { itemId, images, raw };
+}
+
+async function categoryFromReference(
+  session: XianyuSession,
+  itemId: string,
+  expectedCategoryId: string,
+) {
+  const raw = await session.call(
+    "mtop.idle.pc.idleitem.editDetail",
+    { itemId },
+    { spm: "a21ybx.publish.0.0" },
+  );
+  const category = objectValue(raw.data?.itemCatDTO);
+  const categoryId = String(category.catId || "");
+  if (!categoryId) throw new Error("参考商品未返回有效闲鱼类目");
+  if (expectedCategoryId && categoryId !== expectedCategoryId) {
+    throw new Error("参考商品类目与草稿指定类目不一致");
+  }
+  return category;
 }
 
 export async function editListing(
