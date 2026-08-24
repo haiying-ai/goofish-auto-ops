@@ -208,9 +208,6 @@ export async function POST() {
           set: {
             title: item.title,
             priceCents: item.priceCents,
-            ...(item.image
-              ? { imagesJson: JSON.stringify([item.image]) }
-              : {}),
             status: item.status,
             lastError: null,
             updatedAt: now,
