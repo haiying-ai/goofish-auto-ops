@@ -16,12 +16,14 @@ type Card = {
 };
 
 function extract(card: Card) {
-  const itemStatus = Number(card.itemStatus);
+  const itemStatus = String(card.itemStatus ?? "");
   return {
     itemId: String(card.id || ""),
     title: String(card.title || "未命名商品"),
     priceCents: Math.round(Number(card.priceInfo?.price || 0) * 100),
-    status: Number.isFinite(itemStatus) && itemStatus > 0 ? "published" : "offline",
+    // xyh.item.list 是“我的商品”接口，它的 itemStatus 语义不同于
+    // 通用商品详情/收藏接口：该接口返回 "1" 时表示商品已经下架。
+    status: itemStatus === "1" ? "offline" : "published",
     image: String(card.picInfo?.picUrl || ""),
   };
 }
