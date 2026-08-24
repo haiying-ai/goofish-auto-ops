@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { desc, eq } from "drizzle-orm";
 import { getDb } from "../../../../db";
 import { products } from "../../../../db/schema";
-import { cookieValue, mtop } from "../../../../lib/xianyu";
+import { createXianyuSession } from "../../../../lib/xianyu-session";
 
 export const dynamic = "force-dynamic";
 
@@ -50,7 +50,8 @@ export async function POST() {
   }
 
   try {
-    const userId = cookieValue(cookie, "unb");
+    const session = await createXianyuSession(cookie);
+    const userId = session.cookieValue("unb");
     if (!userId) throw new Error("Cookie 缺少账号字段 unb");
 
     const db = getDb();
@@ -62,8 +63,7 @@ export async function POST() {
     let complete = false;
 
     while (page <= 10) {
-      const raw = await mtop(
-        cookie,
+      const raw = await session.call(
         "mtop.idle.web.xyh.item.list",
         { needGroupInfo: true, pageNumber: page, userId, pageSize: 20 },
         { spm: "a21ybx.item.0.0" },
