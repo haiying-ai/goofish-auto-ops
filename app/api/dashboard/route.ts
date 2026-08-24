@@ -32,7 +32,7 @@ export async function GET() {
           (total, count) => total + count,
           0,
         ),
-        queued: byStatus.queued || 0,
+        queued: (byStatus.draft || 0) + (byStatus.queued || 0),
         published: byStatus.published || 0,
         inventory: Number(stock[0]?.count || 0),
         delivered: Number(delivered[0]?.count || 0),
