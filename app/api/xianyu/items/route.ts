@@ -3,9 +3,147 @@ import { desc, eq } from "drizzle-orm";
 import { getDb } from "../../../../db";
 import { products } from "../../../../db/schema";
 import { cookieValue, mtop } from "../../../../lib/xianyu";
-export const dynamic="force-dynamic";
-type RuntimeEnv={XIANYU_COOKIE?:string};
-type Card={id?:string|number;title?:string;itemStatus?:string;priceInfo?:{price?:string|number};picInfo?:{picUrl?:string}};
-function extract(card:Card){return {itemId:String(card.id||""),title:String(card.title||"未命名商品"),priceCents:Math.round(Number(card.priceInfo?.price||0)*100),status:String(card.itemStatus)==="1"?"offline":"published",image:String(card.picInfo?.picUrl||"")}}
-export async function GET(){try{return Response.json({items:await getDb().select().from(products).where(eq(products.status,"published")).orderBy(desc(products.updatedAt))})}catch(e){return Response.json({error:e instanceof Error?e.message:"读取失败"},{status:500})}}
-export async function POST(){const cookie=(env as unknown as RuntimeEnv).XIANYU_COOKIE;if(!cookie)return Response.json({error:"尚未配置闲鱼 Cookie"},{status:503});try{const userId=cookieValue(cookie,"unb");if(!userId)throw new Error("Cookie 缺少账号字段 unb");let page=1,synced=0;const seen=new Set<string>();while(page<=10){const raw=await mtop(cookie,"mtop.idle.web.xyh.item.list",{needGroupInfo:true,pageNumber:page,userId,pageSize:20},{spm:"a21ybx.item.0.0"});const data=raw.data||{},cards:Card[]=[];const top=data.topItem as {cardData?:Card}|undefined;if(page===1&&top)cards.push(top.cardData||top as Card);for(const wrap of (data.cardList as Array<{cardData?:Card}>||[]))cards.push(wrap.cardData||wrap as Card);let added=0;for(const card of cards){const item=extract(card);if(!item.itemId||seen.has(item.itemId))continue;seen.add(item.itemId);added++;const now=new Date().toISOString();await getDb().insert(products).values({title:item.title,priceCents:item.priceCents,imagesJson:JSON.stringify(item.image?[item.image]:[]),status:item.status,xianyuItemId:item.itemId,updatedAt:now}).onConflictDoUpdate({target:products.xianyuItemId,set:{title:item.title,priceCents:item.priceCents,imagesJson:JSON.stringify(item.image?[item.image]:[]),status:item.status,lastError:null,updatedAt:now}});synced++}if(!added||!data.nextPage)break;page++}return Response.json({success:true,synced})}catch(e){return Response.json({error:e instanceof Error?e.message:"同步失败"},{status:502})}}
+
+export const dynamic = "force-dynamic";
+
+type RuntimeEnv = { XIANYU_COOKIE?: string };
+type Card = {
+  id?: string | number;
+  title?: string;
+  itemStatus?: string | number;
+  priceInfo?: { price?: string | number };
+  picInfo?: { picUrl?: string };
+};
+
+function extract(card: Card) {
+  const itemStatus = Number(card.itemStatus);
+  return {
+    itemId: String(card.id || ""),
+    title: String(card.title || "未命名商品"),
+    priceCents: Math.round(Number(card.priceInfo?.price || 0) * 100),
+    status: Number.isFinite(itemStatus) && itemStatus > 0 ? "published" : "offline",
+    image: String(card.picInfo?.picUrl || ""),
+  };
+}
+
+export async function GET() {
+  try {
+    return Response.json({
+      items: await getDb()
+        .select()
+        .from(products)
+        .where(eq(products.status, "published"))
+        .orderBy(desc(products.updatedAt)),
+    });
+  } catch (error) {
+    return Response.json(
+      { error: error instanceof Error ? error.message : "读取失败" },
+      { status: 500 },
+    );
+  }
+}
+
+export async function POST() {
+  const cookie = (env as unknown as RuntimeEnv).XIANYU_COOKIE;
+  if (!cookie) {
+    return Response.json({ error: "尚未配置闲鱼 Cookie" }, { status: 503 });
+  }
+
+  try {
+    const userId = cookieValue(cookie, "unb");
+    if (!userId) throw new Error("Cookie 缺少账号字段 unb");
+
+    const db = getDb();
+    const seen = new Set<string>();
+    let page = 1;
+    let synced = 0;
+    let published = 0;
+    let offline = 0;
+    let complete = false;
+
+    while (page <= 10) {
+      const raw = await mtop(
+        cookie,
+        "mtop.idle.web.xyh.item.list",
+        { needGroupInfo: true, pageNumber: page, userId, pageSize: 20 },
+        { spm: "a21ybx.item.0.0" },
+      );
+      const data = raw.data || {};
+      const cards: Card[] = [];
+      const top = data.topItem as ({ cardData?: Card } & Card) | undefined;
+      if (page === 1 && top) cards.push(top.cardData || top);
+      for (const wrap of (data.cardList as Array<{ cardData?: Card } & Card>) || []) {
+        cards.push(wrap.cardData || wrap);
+      }
+
+      for (const card of cards) {
+        const item = extract(card);
+        if (!item.itemId || seen.has(item.itemId)) continue;
+        seen.add(item.itemId);
+        const now = new Date().toISOString();
+        await db
+          .insert(products)
+          .values({
+            title: item.title,
+            priceCents: item.priceCents,
+            imagesJson: JSON.stringify(item.image ? [item.image] : []),
+            status: item.status,
+            xianyuItemId: item.itemId,
+            updatedAt: now,
+          })
+          .onConflictDoUpdate({
+            target: products.xianyuItemId,
+            set: {
+              title: item.title,
+              priceCents: item.priceCents,
+              imagesJson: JSON.stringify(item.image ? [item.image] : []),
+              status: item.status,
+              lastError: null,
+              updatedAt: now,
+            },
+          });
+        synced += 1;
+        if (item.status === "published") published += 1;
+        else offline += 1;
+      }
+
+      if (!data.nextPage) {
+        complete = true;
+        break;
+      }
+      page += 1;
+    }
+
+    let markedOffline = 0;
+    if (complete) {
+      const localPublished = await db
+        .select({ id: products.id, xianyuItemId: products.xianyuItemId })
+        .from(products)
+        .where(eq(products.status, "published"));
+      const now = new Date().toISOString();
+      for (const local of localPublished) {
+        if (!local.xianyuItemId || seen.has(local.xianyuItemId)) continue;
+        await db
+          .update(products)
+          .set({ status: "offline", lastError: null, updatedAt: now })
+          .where(eq(products.id, local.id));
+        markedOffline += 1;
+      }
+    }
+
+    return Response.json({
+      success: true,
+      synced,
+      published,
+      offline,
+      markedOffline,
+      reconciled: complete,
+      warning: complete ? null : "商品超过 200 件，未执行缺失商品下架对账",
+    });
+  } catch (error) {
+    return Response.json(
+      { error: error instanceof Error ? error.message : "同步失败" },
+      { status: 502 },
+    );
+  }
+}
