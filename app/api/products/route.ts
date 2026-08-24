@@ -9,10 +9,15 @@ import {
   publishListing,
   takeListingOffline,
   type ListingImage,
+  type ListingInput,
+  type ListingProperty,
+  type ListingSku,
+  type ShippingMode,
 } from "../../../lib/xianyu-items";
 import { createXianyuSession } from "../../../lib/xianyu-session";
 
 type RuntimeEnv = { XIANYU_COOKIE?: string };
+type ProductRow = typeof products.$inferSelect;
 
 export async function POST(request: Request) {
   try {
@@ -21,10 +26,7 @@ export async function POST(request: Request) {
     const [row] = await getDb()
       .insert(products)
       .values({
-        title: listing.title,
-        priceCents: listing.priceCents,
-        description: listing.description,
-        imagesJson: JSON.stringify(listing.images),
+        ...listingValues(listing),
         deliveryType: input.deliveryType === "inventory" ? "inventory" : "text",
         deliveryContent: String(input.deliveryContent || "").trim(),
         status: "queued",
@@ -46,28 +48,15 @@ export async function PATCH(request: Request) {
     if (!id) return Response.json({ error: "商品编号无效" }, { status: 400 });
 
     if (input.action === "publish_listing") {
-      const [current] = await getDb()
-        .select()
-        .from(products)
-        .where(eq(products.id, id))
-        .limit(1);
-      if (!current)
-        return Response.json({ error: "商品不存在" }, { status: 404 });
+      const current = await findProduct(id);
+      if (!current) return Response.json({ error: "商品不存在" }, { status: 404 });
       if (current.status !== "queued" && current.status !== "failed") {
         return Response.json(
           { error: "只有待发布或发布失败的商品可以立即上架" },
           { status: 409 },
         );
       }
-      const cookie = (env as unknown as RuntimeEnv).XIANYU_COOKIE;
-      if (!cookie) throw new Error("尚未配置闲鱼 Cookie");
-      const session = await createXianyuSession(cookie);
-      const remote = await publishListing(session, {
-        title: current.title,
-        description: current.description,
-        priceCents: current.priceCents,
-        images: parseListingImages(current.imagesJson),
-      });
+      const remote = await publishListing(await requiredSession(), productListing(current));
       const [row] = await getDb()
         .update(products)
         .set({
@@ -83,40 +72,39 @@ export async function PATCH(request: Request) {
     }
 
     if (input.action === "edit_listing") {
-      const [current] = await getDb()
-        .select()
-        .from(products)
-        .where(eq(products.id, id))
-        .limit(1);
-      if (!current)
-        return Response.json({ error: "商品不存在" }, { status: 404 });
+      const current = await findProduct(id);
+      if (!current) return Response.json({ error: "商品不存在" }, { status: 404 });
       const listing = readListingInput(
         input,
         parseListingImages(current.imagesJson),
+        productListing(current),
       );
       let images = listing.images;
       if (current.status === "published" && current.xianyuItemId) {
-        const cookie = (env as unknown as RuntimeEnv).XIANYU_COOKIE;
-        if (!cookie) throw new Error("尚未配置闲鱼 Cookie");
-        const session = await createXianyuSession(cookie);
         const remote = await editListing(
-          session,
+          await requiredSession(),
           current.xianyuItemId,
           listing,
         );
         images = remote.images;
       }
-      const now = new Date().toISOString();
       const [row] = await getDb()
         .update(products)
         .set({
-          title: listing.title,
-          description: listing.description,
-          priceCents: listing.priceCents,
-          imagesJson: JSON.stringify(images),
+          ...listingValues({ ...listing, images }),
+          deliveryType:
+            input.deliveryType === undefined
+              ? current.deliveryType
+              : input.deliveryType === "inventory"
+                ? "inventory"
+                : "text",
+          deliveryContent:
+            input.deliveryContent === undefined
+              ? current.deliveryContent
+              : String(input.deliveryContent || "").trim(),
           status: current.status === "failed" ? "queued" : current.status,
           lastError: null,
-          updatedAt: now,
+          updatedAt: new Date().toISOString(),
         })
         .where(eq(products.id, id))
         .returning();
@@ -149,18 +137,10 @@ export async function DELETE(request: Request) {
     const input = (await request.json()) as { id?: number };
     const id = Number(input.id);
     if (!id) return Response.json({ error: "商品编号无效" }, { status: 400 });
-    const [current] = await getDb()
-      .select()
-      .from(products)
-      .where(eq(products.id, id))
-      .limit(1);
-    if (!current)
-      return Response.json({ error: "商品不存在" }, { status: 404 });
+    const current = await findProduct(id);
+    if (!current) return Response.json({ error: "商品不存在" }, { status: 404 });
     if (current.status === "published" && current.xianyuItemId) {
-      const cookie = (env as unknown as RuntimeEnv).XIANYU_COOKIE;
-      if (!cookie) throw new Error("尚未配置闲鱼 Cookie");
-      const session = await createXianyuSession(cookie);
-      await takeListingOffline(session, current.xianyuItemId);
+      await takeListingOffline(await requiredSession(), current.xianyuItemId);
     }
     const [row] = await getDb()
       .update(products)
@@ -183,16 +163,44 @@ export async function DELETE(request: Request) {
   }
 }
 
+async function findProduct(id: number) {
+  const [row] = await getDb()
+    .select()
+    .from(products)
+    .where(eq(products.id, id))
+    .limit(1);
+  return row;
+}
+
+async function requiredSession() {
+  const cookie = (env as unknown as RuntimeEnv).XIANYU_COOKIE;
+  if (!cookie) throw new Error("尚未配置闲鱼 Cookie");
+  return createXianyuSession(cookie);
+}
+
 function readListingInput(
   input: Record<string, unknown>,
   fallbackImages: ListingImage[] = [],
-) {
-  const title = String(input.title || "").trim();
-  const priceCents = Math.round(Number(input.price) * 100);
+  fallback?: ListingInput,
+): ListingInput {
+  const title = String(input.title ?? fallback?.title ?? "").trim();
+  const priceCents = moneyInput(input.price, fallback?.priceCents || 0);
+  const originalPriceCents = optionalMoneyInput(
+    input.originalPrice,
+    fallback?.originalPriceCents,
+  );
+  const quantity = integerInput(input.quantity, fallback?.quantity || 1);
   if (!title) throw new Error("请填写商品标题");
   if (!Number.isFinite(priceCents) || priceCents < 1) {
     throw new Error("售价格式不正确");
   }
+  if (originalPriceCents && originalPriceCents < priceCents) {
+    throw new Error("原价不能低于售价");
+  }
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 9999) {
+    throw new Error("库存必须在 1 到 9999 之间");
+  }
+
   let images = normalizeListingImages(input.images);
   if (!images.length && typeof input.images === "string") {
     images = String(input.images)
@@ -202,10 +210,254 @@ function readListingInput(
   }
   if (!images.length) images = fallbackImages;
   if (!images.length) throw new Error("请至少添加一张商品图片");
+
+  const shippingMode = normalizeShippingMode(
+    input.shippingMode ?? fallback?.shippingMode,
+  );
+  const shippingFeeCents = moneyInput(
+    input.shippingFee,
+    fallback?.shippingFeeCents || 0,
+  );
+  if (!Number.isFinite(shippingFeeCents) || shippingFeeCents < 0) {
+    throw new Error("固定邮费不能小于 0");
+  }
+  const categoryMode =
+    input.categoryMode === "manual" ||
+    (input.categoryMode === undefined && fallback?.categoryMode === "manual")
+      ? "manual"
+      : "auto";
+  const categoryId = String(
+    input.categoryId ?? fallback?.categoryId ?? "",
+  ).trim();
+  if (categoryMode === "manual" && !categoryId) {
+    throw new Error("手动类目模式必须填写闲鱼类目 ID");
+  }
+
   return {
     title,
     priceCents,
-    description: String(input.description || "").trim(),
+    originalPriceCents,
+    quantity,
+    description: String(
+      input.description ?? fallback?.description ?? "",
+    ).trim(),
     images: images.slice(0, 9),
+    shippingMode,
+    shippingFeeCents,
+    selfPickup: booleanInput(input.selfPickup, fallback?.selfPickup || false),
+    categoryMode,
+    categoryId: categoryId || undefined,
+    categoryName: String(
+      input.categoryName ?? fallback?.categoryName ?? "",
+    ).trim(),
+    skus: readSkus(input, fallback?.skus || []),
+    properties: readProperties(input, fallback?.properties || []),
   };
+}
+
+function listingValues(listing: ListingInput) {
+  return {
+    title: listing.title,
+    description: listing.description,
+    priceCents: listing.priceCents,
+    originalPriceCents: listing.originalPriceCents || null,
+    quantity: listing.quantity,
+    shippingMode: listing.shippingMode,
+    shippingFeeCents: listing.shippingFeeCents,
+    selfPickup: listing.selfPickup,
+    categoryMode: listing.categoryMode,
+    categoryId: listing.categoryId || null,
+    categoryName: listing.categoryName || null,
+    skuJson: JSON.stringify(listing.skus),
+    propertiesJson: JSON.stringify(listing.properties),
+    imagesJson: JSON.stringify(listing.images),
+  };
+}
+
+export function productListing(row: ProductRow): ListingInput {
+  return {
+    title: row.title,
+    description: row.description,
+    priceCents: row.priceCents,
+    originalPriceCents: row.originalPriceCents,
+    quantity: row.quantity,
+    shippingMode: normalizeShippingMode(row.shippingMode),
+    shippingFeeCents: row.shippingFeeCents,
+    selfPickup: row.selfPickup,
+    categoryMode: row.categoryMode === "manual" ? "manual" : "auto",
+    categoryId: row.categoryId || undefined,
+    categoryName: row.categoryName || undefined,
+    skus: parseJsonArray<ListingSku>(row.skuJson),
+    properties: parseJsonArray<ListingProperty>(row.propertiesJson),
+    images: parseListingImages(row.imagesJson),
+  };
+}
+
+function readSkus(input: Record<string, unknown>, fallback: ListingSku[]) {
+  if (Array.isArray(input.skus)) return normalizeSkus(input.skus);
+  if (input.skuLines === undefined) return fallback;
+  const lines = String(input.skuLines || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return normalizeSkus(
+    lines.map((line) => {
+      const [propertyText, priceText, quantityText] = line
+        .split("|")
+        .map((value) => value.trim());
+      const properties = propertyText
+        .split(";")
+        .map((part) => part.split("="))
+        .map(([name, value]) => ({
+          name: String(name || "").trim(),
+          value: String(value || "").trim(),
+        }));
+      return {
+        properties,
+        priceCents: Math.round(Number(priceText) * 100),
+        quantity: Number(quantityText),
+      };
+    }),
+  );
+}
+
+function normalizeSkus(value: unknown[]): ListingSku[] {
+  const result = value.map((entry, index) => {
+    const row =
+      entry && typeof entry === "object"
+        ? (entry as Record<string, unknown>)
+        : {};
+    const properties = Array.isArray(row.properties)
+      ? row.properties
+          .map((property) =>
+            property && typeof property === "object"
+              ? {
+                  name: String(
+                    (property as Record<string, unknown>).name || "",
+                  ).trim(),
+                  value: String(
+                    (property as Record<string, unknown>).value || "",
+                  ).trim(),
+                }
+              : { name: "", value: "" },
+          )
+          .filter((property) => property.name && property.value)
+      : [];
+    const priceCents = Number(row.priceCents);
+    const quantity = Math.floor(Number(row.quantity));
+    if (!properties.length || properties.length > 2) {
+      throw new Error(`第 ${index + 1} 行规格格式不正确`);
+    }
+    if (!Number.isFinite(priceCents) || priceCents < 1) {
+      throw new Error(`第 ${index + 1} 行规格价格不正确`);
+    }
+    if (!Number.isFinite(quantity) || quantity < 0 || quantity > 9999) {
+      throw new Error(`第 ${index + 1} 行规格库存必须在 0 到 9999 之间`);
+    }
+    return { properties, priceCents: Math.round(priceCents), quantity };
+  });
+  if (!result.length) return result;
+  const propertyNames = result[0].properties.map((property) => property.name);
+  const combinations = new Set<string>();
+  let totalQuantity = 0;
+  for (const [index, sku] of result.entries()) {
+    const names = sku.properties.map((property) => property.name);
+    if (
+      names.length !== propertyNames.length ||
+      names.some((name, nameIndex) => name !== propertyNames[nameIndex])
+    ) {
+      throw new Error(`第 ${index + 1} 行规格维度必须与第一行一致`);
+    }
+    const combination = sku.properties
+      .map((property) => `${property.name}=${property.value}`)
+      .join(";");
+    if (combinations.has(combination)) {
+      throw new Error(`第 ${index + 1} 行规格组合重复`);
+    }
+    combinations.add(combination);
+    totalQuantity += sku.quantity;
+  }
+  if (totalQuantity < 1 || totalQuantity > 9999) {
+    throw new Error("所有规格库存合计必须在 1 到 9999 之间");
+  }
+  return result;
+}
+
+function readProperties(
+  input: Record<string, unknown>,
+  fallback: ListingProperty[],
+) {
+  if (Array.isArray(input.properties)) {
+    return normalizeProperties(input.properties);
+  }
+  if (input.propertyLines === undefined) return fallback;
+  return normalizeProperties(
+    String(input.propertyLines || "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [name, value] = line.split("=");
+        return { name, value };
+      }),
+  );
+}
+
+function normalizeProperties(value: unknown[]): ListingProperty[] {
+  return value
+    .map((entry) =>
+      entry && typeof entry === "object"
+        ? {
+            name: String(
+              (entry as Record<string, unknown>).name || "",
+            ).trim(),
+            value: String(
+              (entry as Record<string, unknown>).value || "",
+            ).trim(),
+          }
+        : { name: "", value: "" },
+    )
+    .filter((property) => property.name && property.value);
+}
+
+function moneyInput(value: unknown, fallback: number) {
+  if (value === undefined || value === "") return fallback;
+  return Math.round(Number(value) * 100);
+}
+
+function optionalMoneyInput(value: unknown, fallback?: number | null) {
+  if (value === undefined) return fallback || null;
+  if (value === "" || value === null) return null;
+  const result = Math.round(Number(value) * 100);
+  if (!Number.isFinite(result) || result < 0) {
+    throw new Error("原价格式不正确");
+  }
+  return result || null;
+}
+
+function integerInput(value: unknown, fallback: number) {
+  if (value === undefined || value === "") return fallback;
+  return Math.floor(Number(value));
+}
+
+function booleanInput(value: unknown, fallback: boolean) {
+  if (value === undefined) return fallback;
+  return (
+    value === true || value === "true" || value === "on" || value === "1"
+  );
+}
+
+function normalizeShippingMode(value: unknown): ShippingMode {
+  return value === "free" || value === "distance" || value === "fixed"
+    ? value
+    : "none";
+}
+
+function parseJsonArray<T>(value: string) {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
+  } catch {
+    return [];
+  }
 }

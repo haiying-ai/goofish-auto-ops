@@ -7,6 +7,10 @@ const TOKEN_NAMES = ["_m_h5_tk", "_m_h5_tk_enc"] as const;
 export type MtopCallOptions = {
   version?: string;
   spm?: string;
+  origin?: string;
+  referer?: string;
+  valueType?: string | null;
+  headers?: Record<string, string>;
   onTokenRefresh?: (cookie: string) => Promise<void> | void;
 };
 
@@ -55,16 +59,20 @@ export async function mtop(
       sessionOption: "AutoLoginOnly",
       spm_cnt: options.spm || "a21ybx.home.0.0",
     });
+    if (options.valueType) query.set("valueType", options.valueType);
+    const origin = options.origin || "https://www.goofish.com";
+    const referer = options.referer || `${origin}/`;
     const response = await fetch(`${HOST}/h5/${api}/${version}/?${query}`, {
       method: "POST",
       headers: {
         accept: "application/json",
         "content-type": "application/x-www-form-urlencoded",
-        origin: "https://www.goofish.com",
-        referer: "https://www.goofish.com/",
+        origin,
+        referer,
         cookie: currentCookie,
         "user-agent":
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36",
+        ...options.headers,
       },
       body: new URLSearchParams({ data: body }),
     });

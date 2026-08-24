@@ -108,3 +108,36 @@ test("prefers the canonical product image before the placeholder-prone upload al
     globalThis.fetch = originalFetch;
   }
 });
+
+test("cron scans seller orders, sends delivery messages, and confirms shipment", async () => {
+  const [ordersSource, cronSource] = await Promise.all([
+    readFile(new URL("../lib/xianyu-orders.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/jobs/run/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(ordersSource, /mtop\.taobao\.idle\.trade\.merchant\.sold\.get/);
+  assert.match(ordersSource, /mtop\.taobao\.idle\.logistic\.consign\.dummy/);
+  assert.match(cronSource, /sendDeliveryMessage/);
+  assert.match(cronSource, /messageSentAt/);
+  assert.match(cronSource, /needs_configuration/);
+});
+
+test("listing payload includes inventory, shipping, pickup, SKU, and original price fields", async () => {
+  const source = await readFile(
+    new URL("../lib/xianyu-items.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /origPriceInCent/);
+  assert.match(source, /itemSkuList/);
+  assert.match(source, /postPriceInCent/);
+  assert.match(source, /onlyTakeSelf/);
+  assert.match(source, /supportFreight/);
+});
+
+test("unconfigured-order alerts default to the requested mailbox", async () => {
+  const source = await readFile(
+    new URL("../lib/email.ts", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /bingsun2020@163\.com/);
+  assert.match(source, /Idempotency-Key/);
+});

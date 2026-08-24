@@ -20,10 +20,30 @@ export type ListingImage = {
 
 type UploadedImage = Required<ListingImage>;
 
-type ListingInput = {
+export type ListingSku = {
+  properties: Array<{ name: string; value: string }>;
+  priceCents: number;
+  quantity: number;
+};
+
+export type ListingProperty = { name: string; value: string };
+
+export type ShippingMode = "free" | "distance" | "fixed" | "none";
+
+export type ListingInput = {
   title: string;
   description: string;
   priceCents: number;
+  originalPriceCents?: number | null;
+  quantity: number;
+  shippingMode: ShippingMode;
+  shippingFeeCents: number;
+  selfPickup: boolean;
+  categoryMode: "auto" | "manual";
+  categoryId?: string;
+  categoryName?: string;
+  skus: ListingSku[];
+  properties: ListingProperty[];
   images: ListingImage[];
 };
 
@@ -124,7 +144,9 @@ export async function publishListing(
   const images = await prepareImages(session, input.images);
   if (!images.length) throw new Error("至少需要一张有效商品图片");
   const [category, location] = await Promise.all([
-    recommendCategory(session, input.title, images),
+    input.categoryMode === "manual" && input.categoryId
+      ? Promise.resolve(manualCategory(input))
+      : recommendCategory(session, input.title, images, input.skus.length > 0),
     getDefaultLocation(session),
   ]);
   await reserveWriteSlot();
@@ -151,9 +173,17 @@ export async function editListing(
   const details = (detailsRaw.data || {}) as MtopData;
   const images = await prepareImages(session, input.images);
   if (!images.length) throw new Error("至少需要一张有效商品图片");
-  let category = objectValue(details.itemCatDTO);
+  let category =
+    input.categoryMode === "manual" && input.categoryId
+      ? manualCategory(input, objectValue(details.itemCatDTO))
+      : objectValue(details.itemCatDTO);
   if (!String(category.catId || "")) {
-    category = await recommendCategory(session, input.title, images);
+    category = await recommendCategory(
+      session,
+      input.title,
+      images,
+      input.skus.length > 0,
+    );
   }
   let location = objectValue(details.itemAddrDTO);
   if (!Object.keys(location).length)
@@ -210,6 +240,7 @@ export async function getListingDetails(
   const editable = objectValue(editDetail?.data);
   const text = objectValue(editable.itemTextDTO);
   const price = objectValue(editable.itemPriceDTO);
+  const postFee = objectValue(editable.itemPostFeeDTO);
   const imageRows = Array.isArray(editable.imageInfoDOList)
     ? editable.imageInfoDOList
     : [];
@@ -220,6 +251,18 @@ export async function getListingDetails(
     priceCents: Number(
       price.priceInCent || track.soldPrice || track.price || 0,
     ),
+    originalPriceCents: Number(price.origPriceInCent || 0) || null,
+    quantity: Number(editable.quantity || 1),
+    shippingMode: shippingModeFromPayload(postFee),
+    shippingFeeCents: Number(postFee.postPriceInCent || 0),
+    selfPickup: Boolean(
+      postFee.onlyTakeSelf === true || postFee.onlyTakeSelf === "true",
+    ),
+    categoryMode: "manual" as const,
+    categoryId: String(objectValue(editable.itemCatDTO).catId || ""),
+    categoryName: String(objectValue(editable.itemCatDTO).catName || ""),
+    skus: normalizeRemoteSkus(editable.itemSkuList),
+    properties: normalizeRemoteProperties(editable.itemProperties),
     itemStatus: String(editable.itemStatus ?? track.itemStatus ?? ""),
     images: normalizeListingImages(imageRows),
   };
@@ -267,13 +310,14 @@ async function recommendCategory(
   session: XianyuSession,
   title: string,
   images: UploadedImage[],
+  multiSku: boolean,
 ) {
   const raw = await session.call(
     "mtop.taobao.idle.kgraph.property.recommend",
     {
       title,
       lockCpv: false,
-      multiSKU: false,
+      multiSKU: multiSku,
       publishScene: "mainPublish",
       scene: "newPublishChoice",
       description: title,
@@ -318,10 +362,34 @@ function buildListingPayload(
   existing: MtopData = {},
 ) {
   const existingPrice = objectValue(existing.itemPriceDTO);
+  const skuRows = input.skus.length
+    ? input.skus.map((sku) => ({
+        priceInCent: String(sku.priceCents),
+        quantity: String(sku.quantity),
+        propertyList: sku.properties.map((property) => ({
+          propertyText: property.name,
+          valueText: property.value,
+        })),
+      }))
+    : Array.isArray(existing.itemSkuList)
+      ? existing.itemSkuList
+      : undefined;
+  const itemProperties = input.properties.length
+    ? input.properties.map((property) => ({
+        propertyName: property.name,
+        propertyValues: [{ propertyValue: property.value }],
+      }))
+    : Array.isArray(existing.itemProperties)
+      ? existing.itemProperties
+      : undefined;
   return {
     freebies: false,
     itemTypeStr: String(existing.itemTypeStr || "b"),
-    quantity: String(existing.quantity || "1"),
+    quantity: String(
+      input.skus.length
+        ? input.skus.reduce((total, sku) => total + sku.quantity, 0)
+        : input.quantity,
+    ),
     simpleItem: String(existing.simpleItem || "true"),
     imageInfoDOList: imageInfoList(images),
     itemTextDTO: {
@@ -336,39 +404,134 @@ function buildListingPayload(
     itemPriceDTO: {
       ...existingPrice,
       priceInCent: String(input.priceCents),
+      ...(input.originalPriceCents
+        ? { origPriceInCent: String(input.originalPriceCents) }
+        : { origPriceInCent: undefined }),
     },
     userRightsProtocols: Array.isArray(existing.userRightsProtocols)
       ? existing.userRightsProtocols
       : [{ enable: false, serviceCode: "SKILL_PLAY_NO_MIND" }],
-    itemPostFeeDTO: Object.keys(objectValue(existing.itemPostFeeDTO)).length
-      ? objectValue(existing.itemPostFeeDTO)
-      : {
-          canFreeShipping: false,
-          supportFreight: false,
-          onlyTakeSelf: false,
-          templateId: "0",
-        },
+    itemPostFeeDTO: shippingPayload(input),
     itemAddrDTO: location,
     defaultPrice: false,
-    itemCatDTO: {
-      catId: String(category.catId || ""),
-      catName: String(category.catName || ""),
-      channelCatId: String(category.channelCatId || ""),
-      ...(category.leafId ? { leafId: String(category.leafId) } : {}),
-      tbCatId: String(category.tbCatId || ""),
-    },
-    ...(Array.isArray(existing.itemSkuList)
-      ? { itemSkuList: existing.itemSkuList }
-      : {}),
+    itemCatDTO: categoryPayload(category),
+    ...(skuRows ? { itemSkuList: skuRows } : {}),
+    ...(itemProperties ? { itemProperties } : {}),
     ...(Array.isArray(existing.propertyImageList)
       ? { propertyImageList: existing.propertyImageList }
       : {}),
-    onlyTakeSelf: Boolean(existing.onlyTakeSelf ?? true),
     uniqueCode: uniqueCode(),
     sourceId: "pcMainPublish",
     bizcode: "pcMainPublish",
     publishScene: "pcMainPublish",
   };
+}
+
+function manualCategory(input: ListingInput, existing: MtopData = {}) {
+  const sameCategory = String(existing.catId || "") === input.categoryId;
+  return {
+    ...(sameCategory ? existing : {}),
+    catId: String(input.categoryId || ""),
+    catName: String(input.categoryName || existing.catName || ""),
+    channelCatId: String(sameCategory ? existing.channelCatId || "" : ""),
+    tbCatId: String(sameCategory ? existing.tbCatId || "" : ""),
+    ...(sameCategory && existing.leafId
+      ? { leafId: String(existing.leafId) }
+      : {}),
+  };
+}
+
+function categoryPayload(category: MtopData) {
+  return {
+    catId: String(category.catId || ""),
+    ...(category.catName ? { catName: String(category.catName) } : {}),
+    ...(category.channelCatId
+      ? { channelCatId: String(category.channelCatId) }
+      : {}),
+    ...(category.leafId ? { leafId: String(category.leafId) } : {}),
+    ...(category.tbCatId ? { tbCatId: String(category.tbCatId) } : {}),
+  };
+}
+
+function shippingPayload(input: ListingInput) {
+  const base = { onlyTakeSelf: input.selfPickup };
+  if (input.shippingMode === "free") {
+    return { ...base, canFreeShipping: true, supportFreight: true };
+  }
+  if (input.shippingMode === "distance") {
+    return {
+      ...base,
+      canFreeShipping: false,
+      supportFreight: true,
+      templateId: "-100",
+    };
+  }
+  if (input.shippingMode === "fixed") {
+    return {
+      ...base,
+      canFreeShipping: false,
+      supportFreight: true,
+      postPriceInCent: String(input.shippingFeeCents),
+      templateId: "0",
+    };
+  }
+  return {
+    ...base,
+    canFreeShipping: false,
+    supportFreight: false,
+    templateId: "0",
+  };
+}
+
+function shippingModeFromPayload(postFee: MtopData): ShippingMode {
+  const canFree = postFee.canFreeShipping === true || postFee.canFreeShipping === "true";
+  const support = postFee.supportFreight === true || postFee.supportFreight === "true";
+  if (canFree && support) return "free";
+  if (support && String(postFee.templateId || "") === "-100") return "distance";
+  if (support && Number(postFee.postPriceInCent || 0) >= 0) return "fixed";
+  return "none";
+}
+
+function normalizeRemoteSkus(value: unknown): ListingSku[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((row) => {
+      const sku = objectValue(row);
+      const properties = Array.isArray(sku.propertyList)
+        ? sku.propertyList
+            .map((entry) => {
+              const property = objectValue(entry);
+              return {
+                name: String(property.propertyText || "").trim(),
+                value: String(property.valueText || "").trim(),
+              };
+            })
+            .filter((property) => property.name && property.value)
+        : [];
+      return {
+        properties,
+        priceCents: Number(sku.priceInCent || 0),
+        quantity: Number(sku.quantity || 0),
+      };
+    })
+    .filter((sku) => sku.properties.length && sku.priceCents >= 0);
+}
+
+function normalizeRemoteProperties(value: unknown): ListingProperty[] {
+  if (!Array.isArray(value)) return [];
+  const result: ListingProperty[] = [];
+  for (const row of value) {
+    const property = objectValue(row);
+    const name = String(property.propertyName || "").trim();
+    const values = Array.isArray(property.propertyValues)
+      ? property.propertyValues
+      : [];
+    for (const entry of values) {
+      const valueText = String(objectValue(entry).propertyValue || "").trim();
+      if (name && valueText) result.push({ name, value: valueText });
+    }
+  }
+  return result;
 }
 
 function imageInfoList(images: UploadedImage[]) {

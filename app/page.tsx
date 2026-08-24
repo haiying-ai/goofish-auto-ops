@@ -6,6 +6,16 @@ type Product = {
   title: string;
   description?: string;
   priceCents: number;
+  originalPriceCents?: number | null;
+  quantity?: number;
+  shippingMode?: string;
+  shippingFeeCents?: number;
+  selfPickup?: boolean;
+  categoryMode?: string;
+  categoryId?: string;
+  categoryName?: string;
+  skuJson?: string;
+  propertiesJson?: string;
   status: string;
   xianyuItemId?: string;
   deliveryType?: string;
@@ -28,7 +38,13 @@ type Run = {
   startedAt: string;
   finishedAt?: string;
 };
-type Rule = Product & { available: number; used: number };
+type Rule = Product & { available: number; reserved: number; used: number };
+type InventoryRow = {
+  id: number;
+  secret: string;
+  status: "available" | "reserved" | "used";
+  orderId?: string;
+};
 type Account = {
   valid: boolean;
   nick?: string;
@@ -36,6 +52,7 @@ type Account = {
   autoRenewal?: boolean;
   tokenExpiresAt?: string | null;
   tokenRefreshedAt?: string | null;
+  email?: { configured: boolean; recipient: string; sender: string };
 };
 const nav = ["总览", "商品上架", "自动发货", "任务记录", "系统设置"];
 export default function Home() {
@@ -85,7 +102,9 @@ export default function Home() {
   async function checkAccount() {
     setAccount(null);
     try {
-      setAccount(await json("/api/xianyu/status"));
+      const response = await fetch("/api/xianyu/status", { cache: "no-store" });
+      const data = await response.json();
+      setAccount(data);
     } catch (e) {
       setAccount({ valid: false, error: message(e), autoRenewal: true });
     }
@@ -132,6 +151,7 @@ export default function Home() {
     }
     delete payload.imageFiles;
     payload.images = images;
+    payload.selfPickup = formData.has("selfPickup");
     return payload;
   }
   async function addProduct(e: FormEvent<HTMLFormElement>) {
@@ -213,6 +233,17 @@ export default function Home() {
         title: result.item.title || product.title,
         description: result.item.description || product.description,
         priceCents: result.item.priceCents || product.priceCents,
+        originalPriceCents: result.item.originalPriceCents,
+        quantity: result.item.quantity || product.quantity || 1,
+        shippingMode: result.item.shippingMode || product.shippingMode,
+        shippingFeeCents:
+          result.item.shippingFeeCents ?? product.shippingFeeCents,
+        selfPickup: result.item.selfPickup ?? product.selfPickup,
+        categoryMode: result.item.categoryMode || product.categoryMode,
+        categoryId: result.item.categoryId || product.categoryId,
+        categoryName: result.item.categoryName || product.categoryName,
+        skuJson: JSON.stringify(result.item.skus || []),
+        propertiesJson: JSON.stringify(result.item.properties || []),
         imagesJson: result.item.images?.length
           ? JSON.stringify(result.item.images)
           : product.imagesJson,
@@ -252,7 +283,9 @@ export default function Home() {
         headers: { "content-type": "application/json" },
         body: "{}",
       });
-      setNotice(`任务完成：发布 ${d.published}，发货 ${d.delivered}`);
+      setNotice(
+        `任务完成：扫描 ${d.pendingOrders || 0} 单，发布 ${d.published || 0} 件，自动发货 ${d.delivered || 0} 单，待补配置 ${d.configurationAlerts || 0} 单，邮件 ${d.emailsSent || 0} 封`,
+      );
       await refresh();
     } catch (e) {
       setNotice(message(e));
@@ -339,6 +372,7 @@ export default function Home() {
             addProduct={addProduct}
             editProduct={editProduct}
             takeOffline={takeOffline}
+            publishProduct={publishProduct}
             loadProduct={loadProduct}
             syncItems={syncItems}
             syncing={syncing}
@@ -397,7 +431,7 @@ function Overview({
       <ProductPanel
         title="最近商品"
         sub={loading ? "正在同步…" : "包含闲鱼同步商品和待发布任务"}
-        products={products}
+        products={products.slice(0, 12)}
         action={
           <button className="ghost" onClick={refresh}>
             刷新
@@ -422,6 +456,7 @@ function Listings({
   addProduct,
   editProduct,
   takeOffline,
+  publishProduct,
   loadProduct,
   syncItems,
   syncing,
@@ -430,6 +465,7 @@ function Listings({
   addProduct: (e: FormEvent<HTMLFormElement>) => void;
   editProduct: (e: FormEvent<HTMLFormElement>) => Promise<boolean>;
   takeOffline: (product: Product) => Promise<boolean>;
+  publishProduct: (product: Product) => Promise<boolean>;
   loadProduct: (product: Product) => Promise<Product>;
   syncItems: () => void;
   syncing: boolean;
@@ -527,22 +563,123 @@ function Listings({
                   }
                 />
               </label>
-              {!editing && (
-                <label>
-                  发货方式
-                  <select name="deliveryType">
-                    <option value="text">固定文本</option>
-                    <option value="inventory">卡密库存</option>
-                  </select>
-                </label>
-              )}
+              <label>
+                原价（元，可选）
+                <input
+                  name="originalPrice"
+                  type="number"
+                  min="0.01"
+                  step="0.01"
+                  defaultValue={
+                    editing?.originalPriceCents
+                      ? (editing.originalPriceCents / 100).toFixed(2)
+                      : ""
+                  }
+                />
+              </label>
             </div>
+            <div className="form-row">
+              <label>
+                商品库存
+                <input
+                  name="quantity"
+                  type="number"
+                  required
+                  min="1"
+                  max="9999"
+                  step="1"
+                  defaultValue={editing?.quantity || 1}
+                />
+              </label>
+              <label>
+                运费计价方式
+                <select
+                  name="shippingMode"
+                  defaultValue={editing?.shippingMode || "none"}
+                >
+                  <option value="none">不支持邮寄（虚拟交付）</option>
+                  <option value="free">包邮</option>
+                  <option value="distance">按距离计价</option>
+                  <option value="fixed">固定邮费</option>
+                </select>
+              </label>
+            </div>
+            <div className="form-row">
+              <label>
+                固定邮费（元）
+                <input
+                  name="shippingFee"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  defaultValue={
+                    editing?.shippingFeeCents
+                      ? (editing.shippingFeeCents / 100).toFixed(2)
+                      : "0.00"
+                  }
+                />
+              </label>
+              <label className="inline-check">
+                <input
+                  name="selfPickup"
+                  type="checkbox"
+                  defaultChecked={editing?.selfPickup || false}
+                />
+                支持当面自提
+              </label>
+            </div>
+            <div className="form-row">
+              <label>
+                类目设置
+                <select
+                  name="categoryMode"
+                  defaultValue={editing?.categoryMode || "auto"}
+                >
+                  <option value="auto">自动推荐类目</option>
+                  <option value="manual">手动指定类目</option>
+                </select>
+              </label>
+              <label>
+                闲鱼类目 ID（手动时必填）
+                <input
+                  name="categoryId"
+                  defaultValue={editing?.categoryId || ""}
+                  placeholder="例如 50025358"
+                />
+              </label>
+            </div>
+            <label>
+              类目名称（可选）
+              <input
+                name="categoryName"
+                defaultValue={editing?.categoryName || ""}
+                placeholder="仅用于记录和提交类目名称"
+              />
+            </label>
             <label>
               商品描述
               <textarea
                 name="description"
                 rows={4}
                 defaultValue={editing?.description || ""}
+              />
+            </label>
+            <label>
+              商品规格（可选）
+              <textarea
+                name="skuLines"
+                rows={4}
+                defaultValue={editing ? skuLines(editing) : ""}
+                placeholder={"每行：规格=值;规格2=值2|价格元|库存\n示例：颜色=蓝色;容量=128G|99.00|10"}
+              />
+            </label>
+            <label>
+              商品属性（可选）
+              <textarea
+                name="propertyLines"
+                rows={3}
+                defaultValue={editing ? propertyLines(editing) : ""}
+                placeholder={"每行：属性=值\n示例：品牌=无品牌"}
               />
             </label>
             <label>
@@ -563,12 +700,27 @@ function Listings({
                 multiple
               />
             </label>
-            {!editing && (
+            <div className="form-row">
               <label>
-                发货内容
-                <textarea name="deliveryContent" rows={3} />
+                自动发货方式
+                <select
+                  name="deliveryType"
+                  defaultValue={editing?.deliveryType || "text"}
+                >
+                  <option value="text">固定文本 / 链接</option>
+                  <option value="inventory">卡密库存</option>
+                </select>
               </label>
-            )}
+              <label>
+                发货说明 / 固定文本
+                <textarea
+                  name="deliveryContent"
+                  rows={3}
+                  defaultValue={editing?.deliveryContent || ""}
+                  placeholder="卡密模式可填写发送在卡密前的说明"
+                />
+              </label>
+            </div>
             <button className="primary">
               {editing ? "保存商品修改" : "加入发布队列"}
             </button>
@@ -623,6 +775,7 @@ function Delivery({
 }) {
   const [rules, setRules] = useState<Rule[]>([]),
     [selected, setSelected] = useState<Rule | null>(null),
+    [inventoryRows, setInventoryRows] = useState<InventoryRow[]>([]),
     [reload, setReload] = useState(0),
     [q, setQ] = useState(""),
     [configured, setConfigured] = useState("all"),
@@ -630,11 +783,26 @@ function Delivery({
   useEffect(() => {
     fetch("/api/delivery-rules", { cache: "no-store" })
       .then((r) => r.json())
-      .then((d) => setRules(d.rules || []))
+      .then((d) => {
+        const next = d.rules || [];
+        setRules(next);
+        setSelected((current) =>
+          current ? next.find((rule: Rule) => rule.id === current.id) || null : null,
+        );
+      })
       .catch(() => notify("读取发货规则失败"));
   }, [reload, notify]);
+  useEffect(() => {
+    if (!selected) return;
+    fetch(`/api/inventory?productId=${selected.id}`, { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => setInventoryRows(d.inventory || []))
+      .catch(() => notify("读取卡密明细失败"));
+  }, [selected, reload, notify]);
   const isConfigured = (r: Rule) =>
-    Boolean(r.deliveryContent?.trim()) || r.available > 0 || r.used > 0;
+    r.deliveryType === "inventory"
+      ? r.available > 0
+      : Boolean(r.deliveryContent?.trim());
   const filtered = rules.filter(
     (r) =>
       (!q ||
@@ -649,6 +817,22 @@ function Delivery({
     await save(e);
     setSelected(null);
     setReload((x) => x + 1);
+  }
+  async function removeInventory(row: InventoryRow) {
+    if (!window.confirm("确认删除这条未使用卡密吗？")) return;
+    try {
+      const response = await fetch("/api/inventory", {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: row.id }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "删除失败");
+      notify("卡密已删除");
+      setReload((x) => x + 1);
+    } catch (error) {
+      notify(message(error));
+    }
   }
   return (
     <>
@@ -720,7 +904,7 @@ function Delivery({
                     </span>
                     {r.deliveryType === "inventory" ? (
                       <span>
-                        可用 {r.available} · 已用 {r.used}
+                        可用 {r.available} · 已预留 {r.reserved} · 已用 {r.used}
                       </span>
                     ) : (
                       <pre>{r.deliveryContent || "尚未配置发货内容"}</pre>
@@ -766,7 +950,7 @@ function Delivery({
                 }
               >
                 <option value="" disabled>
-                  请选择已上架商品
+                  请选择商品
                 </option>
                 {rules.map((r) => (
                   <option key={r.id} value={r.id}>
@@ -802,6 +986,38 @@ function Delivery({
                 placeholder="每行一个；留空不会删除现有库存"
               />
             </label>
+            {selected && (
+              <section className="inventory-detail">
+                <div>
+                  <b>已配置卡密明细</b>
+                  <small>
+                    可用 {selected.available} · 已预留 {selected.reserved} ·
+                    已用 {selected.used}
+                  </small>
+                </div>
+                {inventoryRows.length ? (
+                  <div className="inventory-list">
+                    {inventoryRows.map((row) => (
+                      <article key={row.id}>
+                        <code>{row.secret}</code>
+                        <span>{inventoryStatus(row.status)}</span>
+                        {row.status === "available" && (
+                          <button
+                            type="button"
+                            className="ghost danger"
+                            onClick={() => removeInventory(row)}
+                          >
+                            删除
+                          </button>
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                ) : (
+                  <p>尚未导入卡密。</p>
+                )}
+              </section>
+            )}
             <button className="primary">
               {selected ? "保存修改" : "保存发货规则"}
             </button>
@@ -839,7 +1055,7 @@ function Jobs({ runs }: { runs: Run[] }) {
                   <Status value={r.status} />
                 </td>
                 <td>
-                  <code>{r.summary}</code>
+                  <code>{formatRunSummary(r.summary)}</code>
                 </td>
               </tr>
             ))
@@ -891,6 +1107,18 @@ function Settings({
         <div>
           <h2>Cron 定时任务</h2>
           <p>服务端密钥已配置，接口路径为 /api/jobs/run</p>
+        </div>
+      </section>
+      <section className="panel setting-card">
+        <span className={account?.email?.configured ? "ok-dot" : "bad-dot"} />
+        <div>
+          <h2>缺配置邮件提醒</h2>
+          <p>
+            {account?.email?.configured
+              ? `已启用 · 收件人 ${account.email.recipient}`
+              : `尚未配置 RESEND_API_KEY · 计划收件人 ${account?.email?.recipient || "bingsun2020@163.com"}`}
+          </p>
+          <small>同一订单只发送一次，补齐发货配置后下一轮会自动继续处理。</small>
         </div>
       </section>
       <section className="panel info-card">
@@ -980,6 +1208,38 @@ function imageUrls(p: Product) {
     return [];
   }
 }
+function skuLines(p: Product) {
+  try {
+    const rows = JSON.parse(p.skuJson || "[]") as Array<{
+      properties?: Array<{ name?: string; value?: string }>;
+      priceCents?: number;
+      quantity?: number;
+    }>;
+    return rows
+      .map((row) => {
+        const properties = (row.properties || [])
+          .map((property) => `${property.name || ""}=${property.value || ""}`)
+          .join(";");
+        return `${properties}|${(Number(row.priceCents || 0) / 100).toFixed(2)}|${Number(row.quantity || 0)}`;
+      })
+      .join("\n");
+  } catch {
+    return "";
+  }
+}
+function propertyLines(p: Product) {
+  try {
+    const rows = JSON.parse(p.propertiesJson || "[]") as Array<{
+      name?: string;
+      value?: string;
+    }>;
+    return rows
+      .map((row) => `${row.name || ""}=${row.value || ""}`)
+      .join("\n");
+  } catch {
+    return "";
+  }
+}
 function image(p: Product) {
   const source = imageUrls(p)[0] || "";
   return source
@@ -988,6 +1248,25 @@ function image(p: Product) {
 }
 function message(e: unknown) {
   return e instanceof Error ? e.message : "操作失败";
+}
+function inventoryStatus(value: InventoryRow["status"]) {
+  return { available: "可用", reserved: "已预留", used: "已使用" }[value];
+}
+function formatRunSummary(value: string) {
+  try {
+    const summary = JSON.parse(value) as Record<string, unknown>;
+    const parts = [
+      `扫描 ${Number(summary.pendingOrders || 0)} 单`,
+      `发布 ${Number(summary.published || 0)} 件`,
+      `发货 ${Number(summary.delivered || 0)} 单`,
+      `待补配置 ${Number(summary.configurationAlerts || 0)} 单`,
+      `邮件 ${Number(summary.emailsSent || 0)} 封`,
+    ];
+    if (Number(summary.failed || 0)) parts.push(`失败 ${summary.failed}`);
+    return parts.join(" · ");
+  } catch {
+    return value;
+  }
 }
 function subtitle(x: string) {
   return (
@@ -1039,7 +1318,13 @@ function Status({ value }: { value: string }) {
     unknown: "其他状态",
     running: "执行中",
     success: "成功",
+    partial: "部分完成",
     failed: "失败",
+    pending: "待处理",
+    message_sent: "消息已发送",
+    needs_configuration: "待补发货配置",
+    delivered: "已发货",
+    refund: "退款中",
   };
   return <span className={`status ${value}`}>{map[value] || value}</span>;
 }
