@@ -15,6 +15,52 @@
 - 为商品配置并查看固定文本、卡密库存、预留状态和使用明细
 - 闲鱼 MTop 临时令牌自动续期；长期登录失效时才需重新采集 Cookie
 - D1 持久化、任务租约、幂等记录和每分钟一次写操作的风控保护
+- Codex 跨会话服务端访问：无需继承浏览器 Cookie，可安全创建草稿、确认后发布
+
+## Codex 跨会话访问
+
+站点保持仅所有者可访问，不需要改成公网。Codex 会话应通过 Sites
+连接读取当前 SIWC 旁路令牌，并在每个请求中发送：
+
+```http
+OAI-Sites-Authorization: Bearer <Sites 返回的旁路令牌>
+```
+
+不要用云端浏览器打开后台，也不要把令牌写入代码、GitHub、`.env` 或聊天内容。
+`SITES_TOKEN` 在本项目中指 Sites 托管的旁路令牌，不是 Worker 环境变量。
+
+机器可读的接口流程：
+
+```http
+GET /api/agent
+```
+
+创建不会自动发布的草稿：
+
+```http
+POST /api/products
+Content-Type: application/json
+
+{
+  "publishMode": "draft",
+  "title": "...",
+  "price": "19.90",
+  "quantity": 1,
+  "description": "...",
+  "images": [{ "url": "...", "width": 1254, "height": 1254 }]
+}
+```
+
+用户确认后才允许发布：
+
+```http
+PATCH /api/products
+Content-Type: application/json
+
+{ "id": 123, "action": "publish_listing" }
+```
+
+`draft` 状态不会被 Cron 发布；原有 `queued` 状态仍保留定时发布能力。
 
 ## 部署要求
 
