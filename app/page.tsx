@@ -94,7 +94,7 @@ export default function Home() {
     setSyncing(true);
     try {
       const d = await json("/api/xianyu/items", { method: "POST" });
-      const detail = `获取 ${d.synced} 件，在售 ${d.published || 0} 件，更新下架 ${(d.offline || 0) + (d.markedOffline || 0)} 件`;
+      const detail = `获取 ${d.synced} 件，在售 ${d.published || 0} 件，已下架 ${(d.offline || 0) + (d.markedOffline || 0)} 件，已售出 ${d.sold || 0} 件`;
       setNotice(
         d.warning ? `同步完成：${detail}；${d.warning}` : `同步完成：${detail}`,
       );
@@ -179,6 +179,22 @@ export default function Home() {
         body: JSON.stringify({ id: product.id }),
       });
       setNotice("商品已下架");
+      await refresh();
+      return true;
+    } catch (e) {
+      setNotice(message(e));
+      return false;
+    }
+  }
+  async function publishProduct(product: Product) {
+    if (!window.confirm(`确认立即上架“${product.title}”吗？`)) return false;
+    try {
+      await json("/api/products", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: product.id, action: "publish_listing" }),
+      });
+      setNotice("商品已上架");
       await refresh();
       return true;
     } catch (e) {
@@ -450,6 +466,8 @@ function Listings({
           <option value="all">全部状态</option>
           <option value="published">在售</option>
           <option value="offline">已下架</option>
+          <option value="sold">已售出</option>
+          <option value="unknown">其他状态</option>
           <option value="queued">待发布</option>
           <option value="failed">发布失败</option>
         </select>
@@ -573,7 +591,15 @@ function Listings({
               >
                 修改
               </button>
-              {product.status !== "offline" && (
+              {(product.status === "queued" || product.status === "failed") && (
+                <button
+                  className="ghost"
+                  onClick={() => publishProduct(product)}
+                >
+                  立即上架
+                </button>
+              )}
+              {product.status === "published" && (
                 <button
                   className="ghost danger"
                   onClick={() => takeOffline(product)}
@@ -907,7 +933,16 @@ function ProductPanel({
             {products.map((p) => (
               <article key={p.id}>
                 <div className="thumb">
-                  {image(p) ? <img src={image(p)} alt="" /> : "鱼"}
+                  {image(p) ? (
+                    <img
+                      src={image(p)}
+                      alt={`${p.title} 商品图`}
+                      loading="lazy"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    "鱼"
+                  )}
                 </div>
                 <div className="product-main">
                   <b>{p.title}</b>
@@ -946,7 +981,10 @@ function imageUrls(p: Product) {
   }
 }
 function image(p: Product) {
-  return imageUrls(p)[0] || "";
+  const source = imageUrls(p)[0] || "";
+  return source
+    ? `/api/xianyu/image?url=${encodeURIComponent(source)}`
+    : "";
 }
 function message(e: unknown) {
   return e instanceof Error ? e.message : "操作失败";
@@ -997,6 +1035,8 @@ function Status({ value }: { value: string }) {
     queued: "待发布",
     published: "在售",
     offline: "已下架",
+    sold: "已售出",
+    unknown: "其他状态",
     running: "执行中",
     success: "成功",
     failed: "失败",

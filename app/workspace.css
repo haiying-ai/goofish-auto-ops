@@ -28,6 +28,14 @@
   background: #eef1f5;
   color: #667085;
 }
+.status.sold {
+  background: #f2efff;
+  color: #6941c6;
+}
+.status.unknown {
+  background: #fff3d9;
+  color: #a46800;
+}
 .status.success {
   background: #e3f7eb;
   color: #168449;

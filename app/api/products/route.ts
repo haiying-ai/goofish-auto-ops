@@ -6,6 +6,7 @@ import {
   editListing,
   normalizeListingImages,
   parseListingImages,
+  publishListing,
   takeListingOffline,
   type ListingImage,
 } from "../../../lib/xianyu-items";
@@ -43,6 +44,43 @@ export async function PATCH(request: Request) {
     const input = (await request.json()) as Record<string, unknown>;
     const id = Number(input.id);
     if (!id) return Response.json({ error: "商品编号无效" }, { status: 400 });
+
+    if (input.action === "publish_listing") {
+      const [current] = await getDb()
+        .select()
+        .from(products)
+        .where(eq(products.id, id))
+        .limit(1);
+      if (!current)
+        return Response.json({ error: "商品不存在" }, { status: 404 });
+      if (current.status !== "queued" && current.status !== "failed") {
+        return Response.json(
+          { error: "只有待发布或发布失败的商品可以立即上架" },
+          { status: 409 },
+        );
+      }
+      const cookie = (env as unknown as RuntimeEnv).XIANYU_COOKIE;
+      if (!cookie) throw new Error("尚未配置闲鱼 Cookie");
+      const session = await createXianyuSession(cookie);
+      const remote = await publishListing(session, {
+        title: current.title,
+        description: current.description,
+        priceCents: current.priceCents,
+        images: parseListingImages(current.imagesJson),
+      });
+      const [row] = await getDb()
+        .update(products)
+        .set({
+          xianyuItemId: remote.itemId,
+          imagesJson: JSON.stringify(remote.images),
+          status: "published",
+          lastError: null,
+          updatedAt: new Date().toISOString(),
+        })
+        .where(eq(products.id, id))
+        .returning();
+      return Response.json({ product: row, remoteUpdated: true });
+    }
 
     if (input.action === "edit_listing") {
       const [current] = await getDb()

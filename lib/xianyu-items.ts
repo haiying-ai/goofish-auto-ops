@@ -29,17 +29,31 @@ type ListingInput = {
 
 type MtopData = Record<string, unknown>;
 
+export function normalizeListingImageUrl(value: unknown) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const url = new URL(raw.startsWith("//") ? `https:${raw}` : raw);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return "";
+    url.protocol = "https:";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
 export function normalizeListingImages(value: unknown): ListingImage[] {
   if (!Array.isArray(value)) return [];
   const result: ListingImage[] = [];
   for (const entry of value) {
     if (typeof entry === "string" && entry.trim()) {
-      result.push({ url: entry.trim() });
+      const url = normalizeListingImageUrl(entry);
+      if (url) result.push({ url });
       continue;
     }
     if (!entry || typeof entry !== "object") continue;
     const image = entry as Record<string, unknown>;
-    const url = String(image.url || "").trim();
+    const url = normalizeListingImageUrl(image.url);
     if (!url) continue;
     const width = Number(image.width || image.widthSize || 0);
     const height = Number(image.height || image.heightSize || 0);
@@ -94,7 +108,7 @@ export async function uploadListingImage(
   const [pixWidth, pixHeight] = String(object.pix || "0x0")
     .split("x")
     .map(Number);
-  const url = String(object.url || "");
+  const url = normalizeListingImageUrl(object.url);
   const width = Number(object.width || pixWidth || 0);
   const height = Number(object.height || pixHeight || 0);
   if (!url || width < 1 || height < 1) {
@@ -167,9 +181,9 @@ export async function takeListingOffline(
 ) {
   await reserveWriteSlot();
   const raw = await session.call(
-    "com.taobao.idle.item.delete",
+    "mtop.taobao.idle.item.downshelf",
     { itemId },
-    { version: "1.1", spm: "a21ybx.item.0.0" },
+    { version: "2.0", spm: "a21ybx.item.0.0" },
   );
   return { itemId, raw };
 }
