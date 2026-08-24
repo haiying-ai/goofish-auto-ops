@@ -29,7 +29,7 @@ export async function POST(request: Request) {
         ...listingValues(listing),
         deliveryType: input.deliveryType === "inventory" ? "inventory" : "text",
         deliveryContent: String(input.deliveryContent || "").trim(),
-        status: "queued",
+        status: input.publishMode === "draft" ? "draft" : "queued",
       })
       .returning();
     return Response.json({ product: row }, { status: 201 });
@@ -50,13 +50,21 @@ export async function PATCH(request: Request) {
     if (input.action === "publish_listing") {
       const current = await findProduct(id);
       if (!current) return Response.json({ error: "商品不存在" }, { status: 404 });
-      if (current.status !== "queued" && current.status !== "failed") {
+      if (
+        current.status !== "draft" &&
+        current.status !== "queued" &&
+        current.status !== "failed"
+      ) {
         return Response.json(
-          { error: "只有待发布或发布失败的商品可以立即上架" },
+          { error: "只有草稿、待发布或发布失败的商品可以立即上架" },
           { status: 409 },
         );
       }
-      const remote = await publishListing(await requiredSession(), productListing(current));
+      const remote = await publishListing(
+        await requiredSession(),
+        productListing(current),
+        String(input.categoryReferenceItemId || "").trim(),
+      );
       const [row] = await getDb()
         .update(products)
         .set({
