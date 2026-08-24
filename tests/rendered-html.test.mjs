@@ -77,6 +77,19 @@ test("maps the official Xianyu listing states without swapping sold and offline"
   assert.match(source, /itemStatus === "1"[\s\S]*?"sold"/);
 });
 
+test("Codex drafts require an explicit publish action and stay out of Cron", async () => {
+  const [productsSource, cronSource, agentSource] = await Promise.all([
+    readFile(new URL("../app/api/products/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/jobs/run/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/agent/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(productsSource, /publishMode === "draft" \? "draft" : "queued"/);
+  assert.match(productsSource, /current\.status !== "draft"/);
+  assert.match(cronSource, /eq\(products\.status, "queued"\)/);
+  assert.doesNotMatch(cronSource, /eq\(products\.status, "draft"\)/);
+  assert.match(agentSource, /guarantee: "draft 状态不会被 Cron 发布"/);
+});
+
 test("prefers the canonical product image before the placeholder-prone upload alias", async () => {
   const worker = await loadWorker();
   const originalFetch = globalThis.fetch;
