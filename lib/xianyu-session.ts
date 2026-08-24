@@ -29,6 +29,9 @@ export async function createXianyuSession(seedCookie: string) {
   let refreshedAt = storedTokens.refreshedAt || null;
 
   return {
+    cookieHeader() {
+      return cookie;
+    },
     cookieValue(name: string) {
       return cookieValue(cookie, name);
     },
