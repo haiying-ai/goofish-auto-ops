@@ -4,7 +4,13 @@ export async function GET() {
   return Response.json({
     ok: true,
     name: "闲鱼自动运营 Codex API",
-    version: "1.1",
+    version: "2.0",
+    mcp: {
+      enabled: true,
+      transport: "streamable-http",
+      path: "/mcp",
+      note: "通过 ChatGPT 插件连接后，各会话可直接发现并调用 Auto Ops 工具，不依赖浏览器 Cookie。",
+    },
     authentication: {
       type: "Sites SIWC bypass token",
       header: "OAI-Sites-Authorization",

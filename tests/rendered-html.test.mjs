@@ -58,6 +58,61 @@ test("renders development preview metadata", async () => {
   assert.match(await response.text(), developmentPreviewMeta);
 });
 
+test("exposes Auto Ops as a stateless streamable HTTP MCP server", async () => {
+  const worker = await loadWorker();
+  const call = (body) =>
+    worker.fetch(
+      new Request("http://localhost/mcp", {
+        method: "POST",
+        headers: {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(body),
+      }),
+      runtimeEnv,
+      executionContext,
+    );
+
+  const initialized = await call({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "auto-ops-test", version: "1.0.0" },
+    },
+  });
+  assert.equal(initialized.status, 200);
+  const initialization = await initialized.json();
+  assert.equal(initialization.result.serverInfo.name, "xianyu-auto-ops");
+  assert.match(initialization.result.instructions, /create_product_draft/);
+
+  const listed = await call({
+    jsonrpc: "2.0",
+    id: 2,
+    method: "tools/list",
+    params: {},
+  });
+  assert.equal(listed.status, 200);
+  const toolNames = (await listed.json()).result.tools.map((tool) => tool.name);
+  for (const name of [
+    "get_product_metrics",
+    "get_product_detail",
+    "upload_product_image",
+    "create_product_draft",
+    "publish_product",
+    "update_product",
+    "take_product_offline",
+    "configure_delivery_rule",
+    "list_orders",
+    "sync_xianyu_products",
+  ]) {
+    assert.ok(toolNames.includes(name), `missing MCP tool ${name}`);
+  }
+});
+
 test("uses the reversible Xianyu downshelf API", async () => {
   const source = await readFile(
     new URL("../lib/xianyu-items.ts", import.meta.url),

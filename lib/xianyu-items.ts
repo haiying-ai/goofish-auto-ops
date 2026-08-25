@@ -263,6 +263,7 @@ export async function getListingDetails(
       .catch(() => null),
   ]);
   const track = objectValue(detail.data?.trackParams);
+  const item = objectValue(detail.data?.itemDO);
   const editable = objectValue(editDetail?.data);
   const text = objectValue(editable.itemTextDTO);
   const price = objectValue(editable.itemPriceDTO);
@@ -291,7 +292,46 @@ export async function getListingDetails(
     properties: normalizeRemoteProperties(editable.itemProperties),
     itemStatus: String(editable.itemStatus ?? track.itemStatus ?? ""),
     images: normalizeListingImages(imageRows),
+    engagement: {
+      views: firstMetric(
+        item.browseCount,
+        item.browseCnt,
+        item.viewCount,
+        track.browseCount,
+        track.browseCnt,
+        track.viewCount,
+      ),
+      wants: firstMetric(
+        item.wantCount,
+        item.wantCnt,
+        item.collectCount,
+        track.wantCount,
+        track.wantCnt,
+        track.collectCount,
+      ),
+      inquiries: firstMetric(
+        item.inquiryCount,
+        item.consultCount,
+        item.chatCount,
+        track.inquiryCount,
+        track.consultCount,
+      ),
+      sold: firstMetric(
+        item.soldCount,
+        item.tradeCount,
+        track.soldCount,
+        track.tradeCount,
+      ),
+    },
   };
+}
+
+function firstMetric(...values: unknown[]) {
+  for (const value of values) {
+    const number = Number(value);
+    if (Number.isFinite(number) && number >= 0) return number;
+  }
+  return null;
 }
 
 async function prepareImages(

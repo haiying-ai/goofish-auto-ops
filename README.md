@@ -19,50 +19,25 @@
 - 固定文本、卡密、API 密钥和订单交付内容使用 AES-GCM 加密保存在 D1
 - 闲鱼 MTop 临时令牌自动续期；长期登录失效时才需重新采集 Cookie
 - D1 持久化、任务租约、幂等记录和每分钟一次写操作的风控保护
-- Codex 跨会话服务端访问：无需继承浏览器 Cookie，可安全创建草稿、确认后发布
+- ChatGPT / Codex 跨会话 MCP 访问：无需继承浏览器 Cookie，可安全查询商品、创建草稿并在确认后发布
 
-## Codex 跨会话访问
+## ChatGPT / Codex 跨会话访问
 
-站点保持仅所有者可访问，不需要改成公网。Codex 会话应通过 Sites
-连接读取当前 SIWC 旁路令牌，并在每个请求中发送：
+站点在 `/mcp` 提供标准 Streamable HTTP MCP 服务，并由 Sites OAuth 保护。
+后台可以继续保持仅所有者可访问；不要把站点改成公网，也不需要在会话之间复制浏览器
+Cookie、ChatGPT 登录态或临时 SIWC 令牌。
 
-```http
-OAI-Sites-Authorization: Bearer <Sites 返回的旁路令牌>
-```
+在 ChatGPT 中只需完成一次连接：
 
-不要用云端浏览器打开后台，也不要把令牌写入代码、GitHub、`.env` 或聊天内容。
-`SITES_TOKEN` 在本项目中指 Sites 托管的旁路令牌，不是 Worker 环境变量。
+1. 在“设置 → 安全”中启用开发者模式。
+2. 打开 ChatGPT 的“插件”，点击 `+` 新建连接。
+3. 填写 Sites 为本项目返回的 MCP 连接地址并完成 OAuth 授权。
+4. 新会话从工具菜单选择 **Auto Ops** 即可使用；工作区管理员还可以把该连接发布给整个工作区。
 
-机器可读的接口流程：
-
-```http
-GET /api/agent
-```
-
-创建不会自动发布的草稿：
-
-```http
-POST /api/products
-Content-Type: application/json
-
-{
-  "publishMode": "draft",
-  "title": "...",
-  "price": "19.90",
-  "quantity": 1,
-  "description": "...",
-  "images": [{ "url": "...", "width": 1254, "height": 1254 }]
-}
-```
-
-用户确认后才允许发布：
-
-```http
-PATCH /api/products
-Content-Type: application/json
-
-{ "id": 123, "action": "publish_listing" }
-```
+MCP 暴露商品查询、经营指标、图片上传、草稿创建、确认发布、修改、下架、自动发货
+配置、卡密导入、订单查询/重试、闲鱼同步和自动任务执行等工具。发布、修改和下架均要求显式确认，
+卡密内容及 API 凭据不会通过工具返回。闲鱼未提供的曝光、浏览、想要或咨询指标会明确标为
+不可用，不会伪造数据。
 
 `draft` 状态不会被 Cron 发布；原有 `queued` 状态仍保留定时发布能力。
 
