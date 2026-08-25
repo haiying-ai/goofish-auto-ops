@@ -15,23 +15,42 @@ import {
   type ShippingMode,
 } from "../../../lib/xianyu-items";
 import { createXianyuSession } from "../../../lib/xianyu-session";
+import { encryptSecret } from "../../../lib/secrets";
+import { requireOwnerAccess } from "../../../lib/access";
 
 type RuntimeEnv = { XIANYU_COOKIE?: string };
 type ProductRow = typeof products.$inferSelect;
 
 export async function POST(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const input = (await request.json()) as Record<string, unknown>;
     const listing = readListingInput(input);
-    const [row] = await getDb()
+    const db = getDb();
+    const deliveryContent = String(input.deliveryContent || "").trim();
+    let [row] = await db
       .insert(products)
       .values({
         ...listingValues(listing),
         deliveryType: input.deliveryType === "inventory" ? "inventory" : "text",
-        deliveryContent: String(input.deliveryContent || "").trim(),
-        status: "queued",
+        deliveryContent: "",
+        status: input.publishMode === "draft" ? "draft" : "queued",
       })
       .returning();
+    if (deliveryContent) {
+      [row] = await db
+        .update(products)
+        .set({
+          deliveryContent: await encryptSecret(
+            "product-delivery",
+            row.id,
+            deliveryContent,
+          ),
+        })
+        .where(eq(products.id, row.id))
+        .returning();
+    }
     return Response.json({ product: row }, { status: 201 });
   } catch (error) {
     return Response.json(
@@ -42,6 +61,8 @@ export async function POST(request: Request) {
 }
 
 export async function PATCH(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const input = (await request.json()) as Record<string, unknown>;
     const id = Number(input.id);
@@ -50,13 +71,21 @@ export async function PATCH(request: Request) {
     if (input.action === "publish_listing") {
       const current = await findProduct(id);
       if (!current) return Response.json({ error: "商品不存在" }, { status: 404 });
-      if (current.status !== "queued" && current.status !== "failed") {
+      if (
+        current.status !== "draft" &&
+        current.status !== "queued" &&
+        current.status !== "failed"
+      ) {
         return Response.json(
-          { error: "只有待发布或发布失败的商品可以立即上架" },
+          { error: "只有草稿、待发布或发布失败的商品可以立即上架" },
           { status: 409 },
         );
       }
-      const remote = await publishListing(await requiredSession(), productListing(current));
+      const remote = await publishListing(
+        await requiredSession(),
+        productListing(current),
+        String(input.categoryReferenceItemId || "").trim(),
+      );
       const [row] = await getDb()
         .update(products)
         .set({
@@ -101,7 +130,11 @@ export async function PATCH(request: Request) {
           deliveryContent:
             input.deliveryContent === undefined
               ? current.deliveryContent
-              : String(input.deliveryContent || "").trim(),
+              : await encryptSecret(
+                  "product-delivery",
+                  current.id,
+                  String(input.deliveryContent || "").trim(),
+                ),
           status: current.status === "failed" ? "queued" : current.status,
           lastError: null,
           updatedAt: new Date().toISOString(),
@@ -118,7 +151,11 @@ export async function PATCH(request: Request) {
       .update(products)
       .set({
         deliveryType: input.deliveryType === "inventory" ? "inventory" : "text",
-        deliveryContent: String(input.deliveryContent || "").trim(),
+        deliveryContent: await encryptSecret(
+          "product-delivery",
+          id,
+          String(input.deliveryContent || "").trim(),
+        ),
         updatedAt: new Date().toISOString(),
       })
       .where(eq(products.id, id))
@@ -133,6 +170,8 @@ export async function PATCH(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const input = (await request.json()) as { id?: number };
     const id = Number(input.id);
