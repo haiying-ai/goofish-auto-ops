@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { emailStatus } from "../../../../lib/email";
 import { createXianyuSession } from "../../../../lib/xianyu-session";
+import { encryptionStatus } from "../../../../lib/secrets";
 
 export const dynamic = "force-dynamic";
 type RuntimeEnv = { XIANYU_COOKIE?: string };
@@ -13,6 +14,7 @@ export async function GET() {
         valid: false,
         autoRenewal: true,
         email: emailStatus(),
+        encryptionConfigured: encryptionStatus(),
         error: "尚未配置闲鱼 Cookie",
       },
       { status: 503 },
@@ -32,6 +34,7 @@ export async function GET() {
       nick: String(user.nick || ""),
       accountConfigured: Boolean(session.cookieValue("unb")),
       email: emailStatus(),
+      encryptionConfigured: encryptionStatus(),
       ...session.tokenStatus(),
     });
   } catch (error) {
@@ -39,6 +42,7 @@ export async function GET() {
       {
         valid: false,
         email: emailStatus(),
+        encryptionConfigured: encryptionStatus(),
         error: error instanceof Error ? error.message : "登录验证失败",
         ...session.tokenStatus(),
       },

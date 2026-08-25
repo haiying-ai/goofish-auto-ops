@@ -29,6 +29,7 @@ type Summary = {
   published: number;
   inventory: number;
   delivered: number;
+  needsAttention: number;
 };
 type Run = {
   id: number;
@@ -38,12 +39,73 @@ type Run = {
   startedAt: string;
   finishedAt?: string;
 };
-type Rule = Product & { available: number; reserved: number; used: number };
+type ApiDeliveryConfig = {
+  url?: string;
+  method?: "GET" | "POST";
+  headers?: Record<string, string>;
+  params?: Record<string, string>;
+  responsePath?: string;
+  timeoutSeconds?: number;
+  retryEnabled?: boolean;
+};
+type Rule = {
+  id: number | null;
+  productId: number;
+  title: string;
+  xianyuItemId?: string;
+  productStatus: string;
+  skuJson?: string;
+  specKey: string;
+  specLabel: string;
+  deliveryType: "text" | "inventory" | "api";
+  deliveryContent: string;
+  apiConfig?: ApiDeliveryConfig | null;
+  lowStockThreshold: number;
+  enabled: boolean;
+  legacy?: boolean;
+  available: number;
+  reserved: number;
+  used: number;
+};
 type InventoryRow = {
   id: number;
   secret: string;
   status: "available" | "reserved" | "used";
   orderId?: string;
+};
+type AutomationStep = {
+  id: number;
+  stepKey: string;
+  actionType: string;
+  status: string;
+  attempts: number;
+  lastError?: string | null;
+  updatedAt: string;
+};
+type Order = {
+  id: number;
+  xianyuOrderId: string;
+  xianyuItemId?: string;
+  productTitle: string;
+  ruleLabel: string;
+  itemTitle?: string;
+  specText: string;
+  buyerNick?: string;
+  quantity: number;
+  status: string;
+  deliveryType?: string;
+  deliveryContent?: string;
+  lastError?: string;
+  manualNote?: string;
+  messageSentAt?: string;
+  shipmentConfirmedAt?: string;
+  updatedAt: string;
+  automation?: {
+    status: string;
+    currentStep: string;
+    lastError?: string;
+    steps: AutomationStep[];
+  } | null;
 };
 type Account = {
   valid: boolean;
@@ -53,8 +115,16 @@ type Account = {
   tokenExpiresAt?: string | null;
   tokenRefreshedAt?: string | null;
   email?: { configured: boolean; recipient: string; sender: string };
+  encryptionConfigured?: boolean;
 };
-const nav = ["总览", "商品上架", "自动发货", "任务记录", "系统设置"];
+const nav = [
+  "总览",
+  "商品上架",
+  "自动发货",
+  "订单管理",
+  "任务记录",
+  "系统设置",
+];
 export default function Home() {
   const [active, setActive] = useState("总览"),
     [products, setProducts] = useState<Product[]>([]),
@@ -64,6 +134,7 @@ export default function Home() {
       published: 0,
       inventory: 0,
       delivered: 0,
+      needsAttention: 0,
     }),
     [runs, setRuns] = useState<Run[]>([]),
     [loading, setLoading] = useState(true),
@@ -255,25 +326,41 @@ export default function Home() {
   }
   async function saveDelivery(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    const form = e.currentTarget,
-      p = Object.fromEntries(new FormData(form).entries());
+    const form = e.currentTarget;
+    const formData = new FormData(form);
     try {
-      await json("/api/products", {
-        method: "PATCH",
+      const deliveryType = String(formData.get("deliveryType") || "text");
+      const payload: Record<string, unknown> = {
+        productId: Number(formData.get("productId")),
+        specLabel: String(formData.get("specLabel") || ""),
+        deliveryType,
+        deliveryContent: String(formData.get("deliveryContent") || ""),
+        lowStockThreshold: Number(formData.get("lowStockThreshold") || 3),
+      };
+      if (deliveryType === "api") payload.apiConfig = apiConfigFromForm(formData);
+      const result = await json("/api/delivery-rules", {
+        method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(p),
+        body: JSON.stringify(payload),
       });
-      if (p.deliveryType === "inventory" && String(p.secrets || "").trim())
+      const secrets = String(formData.get("secrets") || "").trim();
+      if (deliveryType === "inventory" && secrets)
         await json("/api/inventory", {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ productId: Number(p.id), secrets: p.secrets }),
+          body: JSON.stringify({
+            productId: Number(payload.productId),
+            ruleId: result.rule.id,
+            secrets,
+          }),
         });
       setNotice("自动发货规则已保存");
       form.reset();
       await refresh();
+      return true;
     } catch (e) {
       setNotice(message(e));
+      return false;
     }
   }
   async function runNow() {
@@ -315,6 +402,8 @@ export default function Home() {
                     ? "＋"
                     : x === "自动发货"
                       ? "↗"
+                      : x === "订单管理"
+                        ? "◎"
                       : x === "任务记录"
                         ? "≡"
                         : "⚙"}
@@ -381,6 +470,7 @@ export default function Home() {
         {active === "自动发货" && (
           <Delivery save={saveDelivery} notify={setNotice} />
         )}{" "}
+        {active === "订单管理" && <Orders notify={setNotice} />}{" "}
         {active === "任务记录" && <Jobs runs={runs} />}{" "}
         {active === "系统设置" && (
           <Settings account={account} refresh={checkAccount} />
@@ -424,7 +514,7 @@ function Overview({
         <Stat
           label="已自动发货"
           value={summary.delivered}
-          hint="去重保护已开启"
+          hint={`${summary.needsAttention} 单需要处理`}
           tone="green"
         />
       </div>
@@ -773,11 +863,12 @@ function Delivery({
   save,
   notify,
 }: {
-  save: (e: FormEvent<HTMLFormElement>) => Promise<void>;
+  save: (e: FormEvent<HTMLFormElement>) => Promise<boolean>;
   notify: (s: string) => void;
 }) {
   const [rules, setRules] = useState<Rule[]>([]),
     [selected, setSelected] = useState<Rule | null>(null),
+    [deliveryKind, setDeliveryKind] = useState<Rule["deliveryType"]>("text"),
     [inventoryRows, setInventoryRows] = useState<InventoryRow[]>([]),
     [reload, setReload] = useState(0),
     [q, setQ] = useState(""),
@@ -790,14 +881,21 @@ function Delivery({
         const next = d.rules || [];
         setRules(next);
         setSelected((current) =>
-          current ? next.find((rule: Rule) => rule.id === current.id) || null : null,
+          current
+            ? next.find(
+                (rule: Rule) => ruleIdentity(rule) === ruleIdentity(current),
+              ) || null
+            : null,
         );
       })
       .catch(() => notify("读取发货规则失败"));
   }, [reload, notify]);
   useEffect(() => {
     if (!selected) return;
-    fetch(`/api/inventory?productId=${selected.id}`, { cache: "no-store" })
+    fetch(
+      `/api/inventory?productId=${selected.productId}&ruleId=${selected.id || ""}`,
+      { cache: "no-store" },
+    )
       .then((r) => r.json())
       .then((d) => setInventoryRows(d.inventory || []))
       .catch(() => notify("读取卡密明细失败"));
@@ -805,6 +903,8 @@ function Delivery({
   const isConfigured = (r: Rule) =>
     r.deliveryType === "inventory"
       ? r.available > 0
+      : r.deliveryType === "api"
+        ? Boolean(r.apiConfig?.url)
       : Boolean(r.deliveryContent?.trim());
   const filtered = rules.filter(
     (r) =>
@@ -816,10 +916,34 @@ function Delivery({
         (configured === "yes" ? isConfigured(r) : !isConfigured(r))) &&
       (kind === "all" || r.deliveryType === kind),
   );
+  const productOptions = [
+    ...new Map(rules.map((rule) => [rule.productId, rule])).values(),
+  ];
   async function submit(e: FormEvent<HTMLFormElement>) {
-    await save(e);
-    setSelected(null);
-    setReload((x) => x + 1);
+    if (await save(e)) {
+      setSelected(null);
+      setDeliveryKind("text");
+      setInventoryRows([]);
+      setReload((x) => x + 1);
+    }
+  }
+  async function testApi(form: HTMLFormElement | null) {
+    if (!form) return;
+    try {
+      const config = apiConfigFromForm(new FormData(form));
+      const response = await fetch("/api/api-delivery/test", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ config }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "测试失败");
+      notify(
+        `API 测试成功：HTTP ${data.result.status}，提取值 ${data.result.extractedValue || "（空）"}`,
+      );
+    } catch (error) {
+      notify(message(error));
+    }
   }
   async function removeInventory(row: InventoryRow) {
     if (!window.confirm("确认删除这条未使用卡密吗？")) return;
@@ -860,6 +984,7 @@ function Delivery({
           <option value="all">全部发货类型</option>
           <option value="text">固定文本 / 链接</option>
           <option value="inventory">卡密库存</option>
+          <option value="api">API 动态发卡</option>
         </select>
         <b>
           {filtered.length} / {rules.length} 件
@@ -877,15 +1002,27 @@ function Delivery({
             {filtered.length ? (
               filtered.map((r) => (
                 <article
-                  key={r.id}
-                  className={selected?.id === r.id ? "selected" : ""}
+                  key={ruleIdentity(r)}
+                  className={
+                    selected && ruleIdentity(selected) === ruleIdentity(r)
+                      ? "selected"
+                      : ""
+                  }
                 >
                   <div className="rule-head">
                     <div>
                       <b>{r.title}</b>
-                      <small>{r.xianyuItemId}</small>
+                      <small>
+                        {r.xianyuItemId || "待上架"} · {r.specLabel || "默认规则"}
+                      </small>
                     </div>
-                    <button className="ghost" onClick={() => setSelected(r)}>
+                    <button
+                      className="ghost"
+                      onClick={() => {
+                        setSelected(r);
+                        setDeliveryKind(r.deliveryType);
+                      }}
+                    >
                       查看 / 修改
                     </button>
                   </div>
@@ -903,12 +1040,19 @@ function Delivery({
                       方式：
                       {r.deliveryType === "inventory"
                         ? "卡密库存"
-                        : "固定文本 / 链接"}
+                        : r.deliveryType === "api"
+                          ? "API 动态发卡"
+                          : "固定文本 / 链接"}
                     </span>
                     {r.deliveryType === "inventory" ? (
                       <span>
                         可用 {r.available} · 已预留 {r.reserved} · 已用 {r.used}
                       </span>
+                    ) : r.deliveryType === "api" ? (
+                      <pre>
+                        {r.apiConfig?.method || "POST"}{" "}
+                        {r.apiConfig?.url || "尚未配置 API 地址"}
+                      </pre>
                     ) : (
                       <pre>{r.deliveryContent || "尚未配置发货内容"}</pre>
                     )}
@@ -934,62 +1078,207 @@ function Delivery({
               </p>
             </div>
             {selected && (
-              <button className="ghost" onClick={() => setSelected(null)}>
+              <button
+                className="ghost"
+                onClick={() => {
+                  setSelected(null);
+                  setDeliveryKind("text");
+                  setInventoryRows([]);
+                }}
+              >
                 取消编辑
               </button>
             )}
           </div>
-          <form key={selected?.id || "new"} onSubmit={submit}>
+          <form
+            key={selected ? ruleIdentity(selected) : "new"}
+            onSubmit={submit}
+          >
             <label>
               选择商品
               <select
-                name="id"
+                name="productId"
                 required
-                value={selected?.id || ""}
-                onChange={(e) =>
-                  setSelected(
-                    rules.find((r) => r.id === Number(e.target.value)) || null,
-                  )
-                }
+                value={selected?.productId || ""}
+                onChange={(e) => {
+                  const next =
+                    rules.find(
+                      (r) =>
+                        r.productId === Number(e.target.value) && !r.specKey,
+                    ) ||
+                    rules.find(
+                      (r) => r.productId === Number(e.target.value),
+                    ) ||
+                    null;
+                  setSelected(next);
+                  setDeliveryKind(next?.deliveryType || "text");
+                }}
               >
                 <option value="" disabled>
                   请选择商品
                 </option>
-                {rules.map((r) => (
-                  <option key={r.id} value={r.id}>
+                {productOptions.map((r) => (
+                  <option key={r.productId} value={r.productId}>
                     {r.title}
                   </option>
                 ))}
               </select>
             </label>
             <label>
+              适用规格（留空即默认规则）
+              <input
+                name="specLabel"
+                list="delivery-spec-options"
+                defaultValue={selected?.specKey ? selected.specLabel : ""}
+                placeholder="例如：颜色=蓝色;容量=128G"
+              />
+              <datalist id="delivery-spec-options">
+                {skuSpecLabels(selected?.skuJson).map((value) => (
+                  <option key={value} value={value} />
+                ))}
+              </datalist>
+            </label>
+            <label>
               发货方式
               <select
                 name="deliveryType"
-                defaultValue={selected?.deliveryType || "text"}
+                value={deliveryKind}
+                onChange={(event) =>
+                  setDeliveryKind(
+                    event.target.value as Rule["deliveryType"],
+                  )
+                }
               >
                 <option value="text">固定文本 / 网盘链接</option>
                 <option value="inventory">卡密库存</option>
+                <option value="api">API 动态发卡</option>
               </select>
             </label>
-            <label>
-              具体发货内容
-              <textarea
-                name="deliveryContent"
-                rows={7}
-                defaultValue={selected?.deliveryContent || ""}
-                placeholder="付款后发送给买家的完整文字、资料链接和提取码"
-              />
-            </label>
-            <label>
-              追加卡密
-              <textarea
-                name="secrets"
-                rows={5}
-                placeholder="每行一个；留空不会删除现有库存"
-              />
-            </label>
-            {selected && (
+            {deliveryKind !== "api" && (
+              <label>
+                {deliveryKind === "inventory"
+                  ? "卡密前置说明（可选）"
+                  : "具体发货内容"}
+                <textarea
+                  name="deliveryContent"
+                  rows={6}
+                  defaultValue={selected?.deliveryContent || ""}
+                  placeholder="付款后发送给买家的文字、资料链接和提取码"
+                />
+              </label>
+            )}
+            {deliveryKind === "inventory" && (
+              <>
+                <label>
+                  低库存预警阈值
+                  <input
+                    name="lowStockThreshold"
+                    type="number"
+                    min="0"
+                    max="9999"
+                    defaultValue={selected?.lowStockThreshold ?? 3}
+                  />
+                </label>
+                <label>
+                  追加卡密
+                  <textarea
+                    name="secrets"
+                    rows={5}
+                    placeholder="每行一个；留空不会删除现有库存"
+                  />
+                </label>
+              </>
+            )}
+            {deliveryKind === "api" && (
+              <section className="api-config">
+                <label>
+                  API 地址（仅 HTTPS）
+                  <input
+                    name="apiUrl"
+                    type="url"
+                    required
+                    defaultValue={selected?.apiConfig?.url || ""}
+                    placeholder="https://api.example.com/cards/issue"
+                  />
+                </label>
+                <div className="form-row">
+                  <label>
+                    请求方式
+                    <select
+                      name="apiMethod"
+                      defaultValue={selected?.apiConfig?.method || "POST"}
+                    >
+                      <option value="POST">POST JSON</option>
+                      <option value="GET">GET 查询参数</option>
+                    </select>
+                  </label>
+                  <label>
+                    响应取值路径
+                    <input
+                      name="apiResponsePath"
+                      defaultValue={
+                        selected?.apiConfig?.responsePath || "data.key"
+                      }
+                      placeholder="data.card.code"
+                    />
+                  </label>
+                </div>
+                <label>
+                  请求头（JSON）
+                  <textarea
+                    name="apiHeaders"
+                    rows={4}
+                    defaultValue={prettyJson(selected?.apiConfig?.headers || {})}
+                    placeholder={'{"Authorization":"Bearer ..."}'}
+                  />
+                </label>
+                <label>
+                  请求参数（JSON）
+                  <textarea
+                    name="apiParams"
+                    rows={5}
+                    defaultValue={prettyJson(selected?.apiConfig?.params || {
+                      order_id: "{order_id}",
+                      idempotency_key: "{idempotency_key}",
+                    })}
+                  />
+                </label>
+                <div className="form-row">
+                  <label>
+                    超时（秒）
+                    <input
+                      name="apiTimeoutSeconds"
+                      type="number"
+                      min="3"
+                      max="20"
+                      defaultValue={selected?.apiConfig?.timeoutSeconds || 10}
+                    />
+                  </label>
+                  <label className="inline-check">
+                    <input
+                      name="apiRetryEnabled"
+                      type="checkbox"
+                      defaultChecked={
+                        selected?.apiConfig?.retryEnabled || false
+                      }
+                    />
+                    失败自动重试（需传幂等键）
+                  </label>
+                </div>
+                <small>
+                  可用变量：{"{order_id}"}、{"{item_id}"}、{"{buyer_id}"}、
+                  {"{spec_text}"}、{"{quantity}"}、{"{idempotency_key}"}
+                </small>
+                <button
+                  type="button"
+                  className="ghost"
+                  onClick={(event) => testApi(event.currentTarget.form)}
+                >
+                  测试 API 配置
+                </button>
+              </section>
+            )}
+            {selected && deliveryKind === "inventory" && (
               <section className="inventory-detail">
                 <div>
                   <b>已配置卡密明细</b>
@@ -1027,6 +1316,231 @@ function Delivery({
           </form>
         </section>
       </div>
+    </>
+  );
+}
+function Orders({ notify }: { notify: (value: string) => void }) {
+  const [rows, setRows] = useState<Order[]>([]),
+    [loading, setLoading] = useState(true),
+    [q, setQ] = useState(""),
+    [status, setStatus] = useState("all"),
+    [kind, setKind] = useState("all"),
+    [expanded, setExpanded] = useState<number | null>(null),
+    [reload, setReload] = useState(0);
+  useEffect(() => {
+    fetch("/api/orders", { cache: "no-store" })
+      .then(async (response) => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || "读取订单失败");
+        setRows(data.orders || []);
+      })
+      .catch((error) => notify(message(error)))
+      .finally(() => setLoading(false));
+  }, [reload, notify]);
+  const filtered = rows.filter(
+    (order) =>
+      (!q ||
+        `${order.xianyuOrderId} ${order.productTitle} ${order.specText || ""} ${order.buyerNick || ""}`
+          .toLowerCase()
+          .includes(q.toLowerCase())) &&
+      (status === "all" ||
+        (status === "attention"
+          ? ["failed", "needs_configuration"].includes(order.status)
+          : order.status === status)) &&
+      (kind === "all" || order.deliveryType === kind),
+  );
+  async function operate(order: Order, action: string) {
+    const labels: Record<string, string> = {
+      retry: "将失败步骤放回队列，下一轮定时任务自动重试",
+      resend: "清除消息发送标记，下一轮定时任务重新发送",
+      confirm_shipment: "立即在闲鱼确认该订单已发货",
+      mark_resolved: "标记为已人工处理",
+    };
+    if (!window.confirm(`确认${labels[action] || "执行此操作"}吗？`)) return;
+    const note =
+      action === "mark_resolved"
+        ? window.prompt("请输入人工处理备注", "已人工处理") || "已人工处理"
+        : "";
+    try {
+      const response = await fetch("/api/orders", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: order.id, action, note }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "订单操作失败");
+      notify(
+        action === "confirm_shipment"
+          ? "已确认发货"
+          : action === "mark_resolved"
+            ? "订单已标记为人工处理"
+            : "订单已放回自动处理队列",
+      );
+      setLoading(true);
+      setReload((value) => value + 1);
+    } catch (error) {
+      notify(message(error));
+    }
+  }
+  return (
+    <>
+      <section className="filter-bar panel">
+        <div className="search-box">
+          ⌕
+          <input
+            value={q}
+            onChange={(event) => setQ(event.target.value)}
+            placeholder="搜索订单号、商品、规格或买家"
+          />
+        </div>
+        <select value={status} onChange={(event) => setStatus(event.target.value)}>
+          <option value="all">全部状态</option>
+          <option value="attention">需处理</option>
+          <option value="pending">待处理</option>
+          <option value="message_sent">消息已发送</option>
+          <option value="delivered">已发货</option>
+          <option value="refund">退款中</option>
+          <option value="resolved">已人工处理</option>
+        </select>
+        <select value={kind} onChange={(event) => setKind(event.target.value)}>
+          <option value="all">全部发货类型</option>
+          <option value="text">固定文本</option>
+          <option value="inventory">卡密库存</option>
+          <option value="api">API 动态发卡</option>
+        </select>
+        <b>
+          {filtered.length} / {rows.length} 单
+        </b>
+      </section>
+      <section className="panel orders-panel">
+        <div className="panel-title">
+          <div>
+            <h2>订单与异常处理</h2>
+            <p>查看自动化步骤，并对失败订单进行安全补偿</p>
+          </div>
+          <button
+            className="ghost"
+            onClick={() => {
+              setLoading(true);
+              setReload((value) => value + 1);
+            }}
+          >
+            刷新
+          </button>
+        </div>
+        {loading ? (
+          <div className="empty compact">
+            <b>正在读取订单…</b>
+          </div>
+        ) : filtered.length ? (
+          <div className="order-list">
+            {filtered.map((order) => (
+              <article key={order.id} className="order-card">
+                <div className="order-head">
+                  <div>
+                    <b>{order.productTitle}</b>
+                    <small>
+                      订单 {order.xianyuOrderId} · {order.specText || "默认规格"} ·
+                      数量 {order.quantity}
+                    </small>
+                  </div>
+                  <Status value={order.status} />
+                </div>
+                <div className="order-meta">
+                  <span>方式：{deliveryTypeLabel(order.deliveryType)}</span>
+                  <span>买家：{order.buyerNick || "未知"}</span>
+                  <span>
+                    当前步骤：
+                    {stepLabel(order.automation?.currentStep || "not_started")}
+                  </span>
+                  <span>{formatDate(order.updatedAt)}</span>
+                </div>
+                {(order.lastError || order.automation?.lastError) && (
+                  <p className="order-error">
+                    {order.lastError || order.automation?.lastError}
+                  </p>
+                )}
+                <div className="order-actions">
+                  <button
+                    className="ghost"
+                    onClick={() =>
+                      setExpanded(expanded === order.id ? null : order.id)
+                    }
+                  >
+                    {expanded === order.id ? "收起详情" : "查看详情"}
+                  </button>
+                  {!order.shipmentConfirmedAt && order.status !== "delivered" && (
+                    <>
+                      <button className="ghost" onClick={() => operate(order, "retry")}>
+                        重试失败步骤
+                      </button>
+                      {order.deliveryContent && (
+                        <button
+                          className="ghost"
+                          onClick={() => operate(order, "resend")}
+                        >
+                          下轮重发消息
+                        </button>
+                      )}
+                      {order.messageSentAt && (
+                        <button
+                          className="ghost"
+                          onClick={() => operate(order, "confirm_shipment")}
+                        >
+                          立即确认发货
+                        </button>
+                      )}
+                      <button
+                        className="ghost"
+                        onClick={() => operate(order, "mark_resolved")}
+                      >
+                        标记人工处理
+                      </button>
+                    </>
+                  )}
+                </div>
+                {expanded === order.id && (
+                  <div className="order-detail">
+                    <div>
+                      <b>已生成发货内容</b>
+                      <pre>
+                        {order.deliveryContent || "尚未生成；补齐规则后可重新执行"}
+                      </pre>
+                    </div>
+                    <div>
+                      <b>自动化步骤</b>
+                      <div className="step-list">
+                        {order.automation?.steps.length ? (
+                          [...order.automation.steps]
+                            .sort((left, right) => left.id - right.id)
+                            .map((step) => (
+                              <article key={step.id}>
+                                <span>{stepLabel(step.stepKey)}</span>
+                                <Status value={step.status} />
+                                <small>尝试 {step.attempts} 次</small>
+                                {step.lastError && <em>{step.lastError}</em>}
+                              </article>
+                            ))
+                        ) : (
+                          <p>尚未创建自动化步骤。</p>
+                        )}
+                      </div>
+                    </div>
+                    {order.manualNote && (
+                      <p className="manual-note">人工备注：{order.manualNote}</p>
+                    )}
+                  </div>
+                )}
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="empty compact">
+            <b>没有符合条件的订单</b>
+            <p>定时任务扫描到已付款订单后会显示在这里</p>
+          </div>
+        )}
+      </section>
     </>
   );
 }
@@ -1122,6 +1636,18 @@ function Settings({
               : `尚未配置 RESEND_API_KEY · 计划收件人 ${account?.email?.recipient || "bingsun2020@163.com"}`}
           </p>
           <small>同一订单只发送一次，补齐发货配置后下一轮会自动继续处理。</small>
+        </div>
+      </section>
+      <section className="panel setting-card">
+        <span className={account?.encryptionConfigured ? "ok-dot" : "bad-dot"} />
+        <div>
+          <h2>发货资料加密</h2>
+          <p>
+            {account?.encryptionConfigured
+              ? "AES-GCM 数据加密已启用"
+              : "尚未配置 DATA_ENCRYPTION_KEY"}
+          </p>
+          <small>卡密、固定文本、API 密钥和订单发货内容均加密保存。</small>
         </div>
       </section>
       <section className="panel info-card">
@@ -1243,6 +1769,91 @@ function propertyLines(p: Product) {
     return "";
   }
 }
+function ruleIdentity(rule: Pick<Rule, "productId" | "specKey">) {
+  return `${rule.productId}:${rule.specKey || "default"}`;
+}
+function skuSpecLabels(value?: string) {
+  if (!value) return [];
+  try {
+    const rows = JSON.parse(value) as Array<{
+      properties?: Array<{ name?: string; value?: string }>;
+    }>;
+    return [
+      ...new Set(
+        rows
+          .map((row) =>
+            (row.properties || [])
+              .map(
+                (property) =>
+                  `${property.name || ""}=${property.value || ""}`,
+              )
+              .filter((entry) => !entry.startsWith("="))
+              .join(";"),
+          )
+          .filter(Boolean),
+      ),
+    ];
+  } catch {
+    return [];
+  }
+}
+function apiConfigFromForm(formData: FormData): ApiDeliveryConfig {
+  return {
+    url: String(formData.get("apiUrl") || "").trim(),
+    method:
+      String(formData.get("apiMethod") || "POST") === "GET" ? "GET" : "POST",
+    headers: parseJsonMap(formData.get("apiHeaders"), "请求头"),
+    params: parseJsonMap(formData.get("apiParams"), "请求参数"),
+    responsePath: String(formData.get("apiResponsePath") || "").trim(),
+    timeoutSeconds: Number(formData.get("apiTimeoutSeconds") || 10),
+    retryEnabled: formData.has("apiRetryEnabled"),
+  };
+}
+function parseJsonMap(value: FormDataEntryValue | null, label: string) {
+  const source = String(value || "").trim();
+  if (!source) return {};
+  try {
+    const parsed = JSON.parse(source) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error();
+    }
+    return Object.fromEntries(
+      Object.entries(parsed as Record<string, unknown>).map(([key, entry]) => [
+        key,
+        typeof entry === "string" ? entry : JSON.stringify(entry),
+      ]),
+    );
+  } catch {
+    throw new Error(`${label}必须是 JSON 对象`);
+  }
+}
+function prettyJson(value: Record<string, string>) {
+  return JSON.stringify(value, null, 2);
+}
+function deliveryTypeLabel(value?: string) {
+  return {
+    text: "固定文本",
+    inventory: "卡密库存",
+    api: "API 动态发卡",
+  }[value || ""] || "未配置";
+}
+function stepLabel(value: string) {
+  return (
+    {
+      not_started: "尚未开始",
+      prepare_delivery: "生成发货内容",
+      send_message: "发送买家消息",
+      confirm_shipment: "确认虚拟发货",
+      completed: "全部完成",
+      manual_resolution: "人工处理",
+    }[value] || value
+  );
+}
+function formatDate(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
 function image(p: Product) {
   const source = imageUrls(p)[0] || "";
   return source
@@ -1277,6 +1888,7 @@ function subtitle(x: string) {
       总览: "账号商品、库存与任务运行概况",
       商品上架: "同步并维护闲鱼现有商品，或创建新的上架任务",
       自动发货: "按商品配置固定内容、网盘链接或卡密库存",
+      订单管理: "查看订单执行步骤，并重试、重发或人工补偿异常订单",
       任务记录: "追踪定时发布、订单轮询和自动发货结果",
       系统设置: "检查账号连接和自动任务运行状态",
     }[x] || ""
@@ -1327,8 +1939,10 @@ function Status({ value }: { value: string }) {
     pending: "待处理",
     message_sent: "消息已发送",
     needs_configuration: "待补发货配置",
+    needs_attention: "需要处理",
     delivered: "已发货",
     refund: "退款中",
+    resolved: "已人工处理",
   };
   return <span className={`status ${value}`}>{map[value] || value}</span>;
 }

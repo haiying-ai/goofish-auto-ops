@@ -154,3 +154,65 @@ test("unconfigured-order alerts default to the requested mailbox", async () => {
   assert.match(source, /bingsun2020@163\.com/);
   assert.match(source, /Idempotency-Key/);
 });
+
+test("delivery automation supports specification rules and API-generated content", async () => {
+  const [schema, cron, apiDelivery, rules] = await Promise.all([
+    readFile(new URL("../db/schema.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/jobs/run/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/api-delivery.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/delivery-rules.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(schema, /deliveryRules/);
+  assert.match(schema, /automationRuns/);
+  assert.match(schema, /automationSteps/);
+  assert.match(cron, /prepare_delivery/);
+  assert.match(cron, /send_message/);
+  assert.match(cron, /confirm_shipment/);
+  assert.match(cron, /fetchApiDeliveryContent/);
+  assert.match(rules, /normalizeSpecKey/);
+  assert.match(apiDelivery, /idempotency_key/);
+  assert.match(apiDelivery, /API 发卡地址必须使用 HTTPS/);
+});
+
+test("sensitive fulfillment data is encrypted before D1 persistence", async () => {
+  const [secrets, inventorySource, rulesSource, cronSource] = await Promise.all([
+    readFile(new URL("../lib/secrets.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/inventory/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/delivery-rules/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/api/jobs/run/route.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(secrets, /AES-GCM/);
+  assert.match(secrets, /DATA_ENCRYPTION_KEY/);
+  assert.match(inventorySource, /encryptSecret\("inventory-secret"/);
+  assert.match(rulesSource, /protectDeliveryRule/);
+  assert.match(cronSource, /encryptSecret\(\s*"order-delivery"/);
+});
+
+test("order console exposes compensating actions and automation step details", async () => {
+  const [ordersSource, pageSource] = await Promise.all([
+    readFile(new URL("../app/api/orders/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  ]);
+  for (const action of [
+    "retry",
+    "resend",
+    "confirm_shipment",
+    "mark_resolved",
+  ]) {
+    assert.match(ordersSource, new RegExp(action));
+  }
+  assert.match(pageSource, /订单管理/);
+  assert.match(pageSource, /自动化步骤/);
+  assert.match(pageSource, /API 动态发卡/);
+});
+
+test("low-stock and task failures use idempotent operational email alerts", async () => {
+  const [cronSource, emailSource] = await Promise.all([
+    readFile(new URL("../app/api/jobs/run/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/email.ts", import.meta.url), "utf8"),
+  ]);
+  assert.match(cronSource, /maybeSendLowStockAlert/);
+  assert.match(cronSource, /sendTaskFailureAlert/);
+  assert.match(emailSource, /sendOperationalAlert/);
+  assert.match(emailSource, /Idempotency-Key/);
+});

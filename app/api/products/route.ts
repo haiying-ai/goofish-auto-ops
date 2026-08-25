@@ -15,6 +15,7 @@ import {
   type ShippingMode,
 } from "../../../lib/xianyu-items";
 import { createXianyuSession } from "../../../lib/xianyu-session";
+import { encryptSecret } from "../../../lib/secrets";
 
 type RuntimeEnv = { XIANYU_COOKIE?: string };
 type ProductRow = typeof products.$inferSelect;
@@ -23,15 +24,30 @@ export async function POST(request: Request) {
   try {
     const input = (await request.json()) as Record<string, unknown>;
     const listing = readListingInput(input);
-    const [row] = await getDb()
+    const db = getDb();
+    const deliveryContent = String(input.deliveryContent || "").trim();
+    let [row] = await db
       .insert(products)
       .values({
         ...listingValues(listing),
         deliveryType: input.deliveryType === "inventory" ? "inventory" : "text",
-        deliveryContent: String(input.deliveryContent || "").trim(),
+        deliveryContent: "",
         status: input.publishMode === "draft" ? "draft" : "queued",
       })
       .returning();
+    if (deliveryContent) {
+      [row] = await db
+        .update(products)
+        .set({
+          deliveryContent: await encryptSecret(
+            "product-delivery",
+            row.id,
+            deliveryContent,
+          ),
+        })
+        .where(eq(products.id, row.id))
+        .returning();
+    }
     return Response.json({ product: row }, { status: 201 });
   } catch (error) {
     return Response.json(
@@ -109,7 +125,11 @@ export async function PATCH(request: Request) {
           deliveryContent:
             input.deliveryContent === undefined
               ? current.deliveryContent
-              : String(input.deliveryContent || "").trim(),
+              : await encryptSecret(
+                  "product-delivery",
+                  current.id,
+                  String(input.deliveryContent || "").trim(),
+                ),
           status: current.status === "failed" ? "queued" : current.status,
           lastError: null,
           updatedAt: new Date().toISOString(),
@@ -126,7 +146,11 @@ export async function PATCH(request: Request) {
       .update(products)
       .set({
         deliveryType: input.deliveryType === "inventory" ? "inventory" : "text",
-        deliveryContent: String(input.deliveryContent || "").trim(),
+        deliveryContent: await encryptSecret(
+          "product-delivery",
+          id,
+          String(input.deliveryContent || "").trim(),
+        ),
         updatedAt: new Date().toISOString(),
       })
       .where(eq(products.id, id))
