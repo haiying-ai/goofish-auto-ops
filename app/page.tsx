@@ -117,6 +117,14 @@ type Account = {
   email?: { configured: boolean; recipient: string; sender: string };
   encryptionConfigured?: boolean;
 };
+type SiteSession = {
+  authenticated: boolean;
+  authorized: boolean;
+  configured: boolean;
+  user?: { email: string } | null;
+  signInPath: string;
+  signOutPath: string;
+};
 const nav = [
   "总览",
   "商品上架",
@@ -140,7 +148,8 @@ export default function Home() {
     [loading, setLoading] = useState(true),
     [notice, setNotice] = useState(""),
     [syncing, setSyncing] = useState(false),
-    [account, setAccount] = useState<Account | null>(null);
+    [account, setAccount] = useState<Account | null>(null),
+    [session, setSession] = useState<SiteSession | null>(null);
   async function json(url: string, init?: RequestInit) {
     const r = await fetch(url, { cache: "no-store", ...init }),
       d = await r.json();
@@ -160,16 +169,28 @@ export default function Home() {
     }
   }
   useEffect(() => {
-    const timer = window.setTimeout(() => void refresh(), 0);
+    const timer = window.setTimeout(() => {
+      void json("/api/session")
+        .then(async (current: SiteSession) => {
+          setSession(current);
+          if (current.authorized) await refresh();
+          else setLoading(false);
+        })
+        .catch((error) => {
+          setNotice(message(error));
+          setLoading(false);
+        });
+    }, 0);
     return () => window.clearTimeout(timer);
   }, []);
   useEffect(() => {
+    if (!session?.authorized) return;
     if (active === "任务记录")
       json("/api/jobs")
         .then((d) => setRuns(d.runs))
         .catch((e) => setNotice(message(e)));
     if (active === "系统设置") checkAccount();
-  }, [active]);
+  }, [active, session?.authorized]);
   async function checkAccount() {
     setAccount(null);
     try {
@@ -378,6 +399,19 @@ export default function Home() {
       setNotice(message(e));
     }
   }
+  if (!session) {
+    return <AuthGate mode="loading" />;
+  }
+  if (!session.authorized) {
+    return (
+      <AuthGate
+        mode={session.authenticated ? "forbidden" : "signed-out"}
+        configured={session.configured}
+        signInPath={session.signInPath}
+        signOutPath={session.signOutPath}
+      />
+    );
+  }
   return (
     <main className="shell">
       <aside className="sidebar">
@@ -427,6 +461,10 @@ export default function Home() {
             <p>{subtitle(active)}</p>
           </div>
           <div className="actions">
+            <span className="signed-in-user">{session.user?.email}</span>
+            <a className="ghost account-link" href={session.signOutPath}>
+              退出
+            </a>
             {active === "商品上架" && (
               <button
                 className="ghost sync"
@@ -474,6 +512,55 @@ export default function Home() {
         {active === "任务记录" && <Jobs runs={runs} />}{" "}
         {active === "系统设置" && (
           <Settings account={account} refresh={checkAccount} />
+        )}
+      </section>
+    </main>
+  );
+}
+function AuthGate({
+  mode,
+  configured = true,
+  signInPath = "/signin-with-chatgpt?return_to=%2F",
+  signOutPath = "/signout-with-chatgpt?return_to=%2F",
+}: {
+  mode: "loading" | "signed-out" | "forbidden";
+  configured?: boolean;
+  signInPath?: string;
+  signOutPath?: string;
+}) {
+  const forbidden = mode === "forbidden";
+  return (
+    <main className="auth-shell">
+      <section className="auth-card">
+        <span className="fish auth-fish">鱼</span>
+        <small>闲鱼自动运营 · Auto Ops</small>
+        <h1>
+          {mode === "loading"
+            ? "正在核验访问权限…"
+            : forbidden
+              ? "当前账号无权访问"
+              : "请先登录管理后台"}
+        </h1>
+        {mode === "loading" ? (
+          <p>正在确认站点所有者身份。</p>
+        ) : forbidden ? (
+          <p>
+            {configured
+              ? "此后台仅允许站点所有者账号访问。请退出当前账号后改用所有者账号登录。"
+              : "站点所有者白名单尚未配置，后台暂时锁定。"}
+          </p>
+        ) : (
+          <p>后台商品、订单、卡密和发货配置受账号白名单保护。</p>
+        )}
+        {mode === "signed-out" && (
+          <a className="auth-primary" href={signInPath}>
+            使用 ChatGPT 继续
+          </a>
+        )}
+        {forbidden && configured && (
+          <a className="auth-secondary" href={signOutPath}>
+            退出并切换账号
+          </a>
         )}
       </section>
     </main>

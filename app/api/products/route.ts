@@ -16,11 +16,14 @@ import {
 } from "../../../lib/xianyu-items";
 import { createXianyuSession } from "../../../lib/xianyu-session";
 import { encryptSecret } from "../../../lib/secrets";
+import { requireOwnerAccess } from "../../../lib/access";
 
 type RuntimeEnv = { XIANYU_COOKIE?: string };
 type ProductRow = typeof products.$inferSelect;
 
 export async function POST(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const input = (await request.json()) as Record<string, unknown>;
     const listing = readListingInput(input);
@@ -58,6 +61,8 @@ export async function POST(request: Request) {
 }
 
 export async function PATCH(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const input = (await request.json()) as Record<string, unknown>;
     const id = Number(input.id);
@@ -165,6 +170,8 @@ export async function PATCH(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const input = (await request.json()) as { id?: number };
     const id = Number(input.id);

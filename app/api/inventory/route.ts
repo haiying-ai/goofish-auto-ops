@@ -1,6 +1,7 @@
 import { and, asc, eq, isNull, or } from "drizzle-orm";
 import { getDb } from "../../../db";
 import { deliveryRules, inventory } from "../../../db/schema";
+import { requireOwnerAccess } from "../../../lib/access";
 import {
   decryptSecret,
   encryptSecret,
@@ -12,6 +13,8 @@ import {
 export const dynamic = "force-dynamic";
 
 export async function GET(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const url = new URL(request.url);
     const productId = Number(url.searchParams.get("productId"));
@@ -59,6 +62,8 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const input = (await request.json()) as {
       productId?: number;
@@ -147,6 +152,8 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const input = (await request.json()) as { id?: number };
     const id = Number(input.id);

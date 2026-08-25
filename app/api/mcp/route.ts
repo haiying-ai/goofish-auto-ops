@@ -1,5 +1,6 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { createAutoOpsMcpServer } from "../../lib/mcp-server";
+import { mcpUnauthorized, requireMcpAccess } from "../../../lib/access";
+import { createAutoOpsMcpServer } from "../../../lib/mcp-server";
 
 export const dynamic = "force-dynamic";
 
@@ -13,11 +14,16 @@ const corsHeaders = {
 };
 
 async function handle(request: Request) {
+  const access = await requireMcpAccess(request);
+  if (!access) return mcpUnauthorized(request);
   const transport = new WebStandardStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
     enableJsonResponse: true,
   });
-  const server = createAutoOpsMcpServer();
+  const server = createAutoOpsMcpServer(
+    request.headers.get("authorization") || "",
+    new URL(request.url).origin,
+  );
   await server.connect(transport);
   const response = await transport.handleRequest(request);
   const headers = new Headers(response.headers);

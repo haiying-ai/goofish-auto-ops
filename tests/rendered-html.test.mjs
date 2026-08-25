@@ -58,23 +58,15 @@ test("renders development preview metadata", async () => {
   assert.match(await response.text(), developmentPreviewMeta);
 });
 
-test("exposes Auto Ops as a stateless streamable HTTP MCP server", async () => {
+test("protects the stateless MCP server with OAuth discovery", async () => {
   const worker = await loadWorker();
-  const call = (body) =>
-    worker.fetch(
-      new Request("http://localhost/mcp", {
-        method: "POST",
-        headers: {
-          accept: "application/json, text/event-stream",
-          "content-type": "application/json",
-        },
-        body: JSON.stringify(body),
-      }),
-      runtimeEnv,
-      executionContext,
-    );
-
-  const initialized = await call({
+  const initialized = await worker.fetch(new Request("http://localhost/api/mcp", {
+    method: "POST",
+    headers: {
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
     jsonrpc: "2.0",
     id: 1,
     method: "initialize",
@@ -83,20 +75,32 @@ test("exposes Auto Ops as a stateless streamable HTTP MCP server", async () => {
       capabilities: {},
       clientInfo: { name: "auto-ops-test", version: "1.0.0" },
     },
-  });
-  assert.equal(initialized.status, 200);
-  const initialization = await initialized.json();
-  assert.equal(initialization.result.serverInfo.name, "xianyu-auto-ops");
-  assert.match(initialization.result.instructions, /create_product_draft/);
+    }),
+  }), runtimeEnv, executionContext);
+  assert.equal(initialized.status, 401);
+  assert.match(initialized.headers.get("www-authenticate") || "", /oauth-protected-resource\/api\/mcp/);
 
-  const listed = await call({
-    jsonrpc: "2.0",
-    id: 2,
-    method: "tools/list",
-    params: {},
-  });
-  assert.equal(listed.status, 200);
-  const toolNames = (await listed.json()).result.tools.map((tool) => tool.name);
+  const protectedResource = await worker.fetch(
+    new Request("http://localhost/.well-known/oauth-protected-resource/api/mcp"),
+    runtimeEnv,
+    executionContext,
+  );
+  assert.equal(protectedResource.status, 200);
+  const metadata = await protectedResource.json();
+  assert.equal(metadata.resource, "http://localhost/api/mcp");
+  assert.deepEqual(metadata.scopes_supported, ["auto_ops.manage"]);
+
+  const authorizationServer = await worker.fetch(
+    new Request("http://localhost/.well-known/oauth-authorization-server"),
+    runtimeEnv,
+    executionContext,
+  );
+  assert.equal(authorizationServer.status, 200);
+  const serverMetadata = await authorizationServer.json();
+  assert.equal(serverMetadata.authorization_endpoint, "http://localhost/oauth/authorize");
+  assert.deepEqual(serverMetadata.code_challenge_methods_supported, ["S256"]);
+
+  const source = await readFile(new URL("../lib/mcp-server.ts", import.meta.url), "utf8");
   for (const name of [
     "get_product_metrics",
     "get_product_detail",
@@ -109,8 +113,20 @@ test("exposes Auto Ops as a stateless streamable HTTP MCP server", async () => {
     "list_orders",
     "sync_xianyu_products",
   ]) {
-    assert.ok(toolNames.includes(name), `missing MCP tool ${name}`);
+    assert.match(source, new RegExp(`"${name}"`), `missing MCP tool ${name}`);
   }
+  assert.match(source, /securitySchemes/);
+});
+
+test("blocks anonymous access to sensitive admin APIs", async () => {
+  const worker = await loadWorker();
+  const response = await worker.fetch(
+    new Request("http://localhost/api/dashboard"),
+    runtimeEnv,
+    executionContext,
+  );
+  assert.notEqual(response.status, 200);
+  assert.match(response.headers.get("cache-control") || "", /no-store/);
 });
 
 test("uses the reversible Xianyu downshelf API", async () => {

@@ -1,21 +1,25 @@
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const origin = new URL(request.url).origin;
   return Response.json({
     ok: true,
     name: "闲鱼自动运营 Codex API",
-    version: "2.0",
+    version: "3.0",
     mcp: {
       enabled: true,
       transport: "streamable-http",
-      path: "/mcp",
+      url: `${origin}/api/mcp`,
+      oauthResource: `${origin}/api/mcp`,
+      protectedResourceMetadata: `${origin}/.well-known/oauth-protected-resource/api/mcp`,
       note: "通过 ChatGPT 插件连接后，各会话可直接发现并调用 Auto Ops 工具，不依赖浏览器 Cookie。",
     },
     authentication: {
-      type: "Sites SIWC bypass token",
-      header: "OAI-Sites-Authorization",
-      scheme: "Bearer",
-      note: "通过 Sites get_site 获取当前令牌；不要使用云端浏览器登录，也不要在聊天或代码中输出令牌。",
+      type: "OAuth 2.1 authorization code with PKCE S256",
+      authorizationServerMetadata: `${origin}/.well-known/oauth-authorization-server`,
+      browserAdmin: "Sign in with ChatGPT + owner email allowlist",
+      mcp: "OAuth Bearer token scoped to auto_ops.manage",
+      note: "每个 ChatGPT 会话连接同一个已安装插件；令牌由站点签发和刷新，不共享浏览器 Cookie，也不得在聊天中粘贴令牌。",
     },
     workflow: [
       {

@@ -9,10 +9,13 @@ import {
   protectDeliveryRule,
 } from "../../../lib/delivery-rules";
 import { decryptSecret, encryptSecret } from "../../../lib/secrets";
+import { requireOwnerAccess } from "../../../lib/access";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const db = getDb();
     const [productRows, ruleRows, inventoryRows] = await Promise.all([
@@ -87,6 +90,8 @@ export async function GET() {
 }
 
 export async function POST(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const input = (await request.json()) as Record<string, unknown>;
     const productId = Number(input.productId || input.id);
@@ -176,6 +181,8 @@ export async function POST(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const input = (await request.json()) as { id?: number };
     const id = Number(input.id);

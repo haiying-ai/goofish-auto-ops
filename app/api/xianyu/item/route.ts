@@ -1,11 +1,14 @@
 import { env } from "cloudflare:workers";
 import { createXianyuSession } from "../../../../lib/xianyu-session";
 import { getListingDetails } from "../../../../lib/xianyu-items";
+import { requireOwnerAccess } from "../../../../lib/access";
 
 export const dynamic = "force-dynamic";
 type RuntimeEnv = { XIANYU_COOKIE?: string };
 
 export async function GET(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   const cookie = (env as unknown as RuntimeEnv).XIANYU_COOKIE;
   if (!cookie) {
     return Response.json({ error: "尚未配置闲鱼 Cookie" }, { status: 503 });

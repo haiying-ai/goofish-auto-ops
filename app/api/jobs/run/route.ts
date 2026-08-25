@@ -52,6 +52,7 @@ import {
   inventoryOwner,
   isEncryptedSecret,
 } from "../../../../lib/secrets";
+import { requireOwnerAccess } from "../../../../lib/access";
 
 export const dynamic = "force-dynamic";
 
@@ -76,17 +77,17 @@ type RunSummary = {
   errors: string[];
 };
 
-async function authorized(request: Request) {
+function cronAuthorized(request: Request) {
   const secret = (env as unknown as RuntimeEnv).CRON_SECRET;
-  if (request.headers.get("oai-authenticated-user-email")) return true;
   if (!secret) return false;
   const auth = request.headers.get("authorization");
   return auth === `Bearer ${secret}`;
 }
 
 export async function POST(request: Request) {
-  if (!(await authorized(request))) {
-    return Response.json({ error: "任务密钥无效" }, { status: 401 });
+  if (!cronAuthorized(request)) {
+    const denied = await requireOwnerAccess(request);
+    if (denied) return denied;
   }
 
   let requestedProductId = 0;

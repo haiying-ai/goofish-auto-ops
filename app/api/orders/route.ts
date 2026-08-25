@@ -15,6 +15,7 @@ import {
   runAutomationStep,
 } from "../../../lib/automation";
 import { decryptSecret } from "../../../lib/secrets";
+import { requireOwnerAccess } from "../../../lib/access";
 import { confirmVirtualShipment } from "../../../lib/xianyu-orders";
 import { createXianyuSession } from "../../../lib/xianyu-session";
 
@@ -22,7 +23,9 @@ export const dynamic = "force-dynamic";
 
 type RuntimeEnv = { XIANYU_COOKIE?: string };
 
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const db = getDb();
     const [orderRows, productRows, ruleRows, runRows, stepRows] =
@@ -86,6 +89,8 @@ export async function GET() {
 }
 
 export async function PATCH(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const input = (await request.json()) as {
       id?: number;

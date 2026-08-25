@@ -2,10 +2,13 @@ import { desc, eq, or, sql } from "drizzle-orm";
 import { getDb } from "../../../db";
 import { inventory, orders, products } from "../../../db/schema";
 import { decryptSecret } from "../../../lib/secrets";
+import { requireOwnerAccess } from "../../../lib/access";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const db = getDb();
     const [rows, counts, stock, delivered, needsAttention] = await Promise.all([

@@ -92,3 +92,39 @@ export const jobRuns = sqliteTable("job_runs", {
   summary: text("summary").notNull().default("{}"), startedAt: text("started_at").notNull().default(sql`CURRENT_TIMESTAMP`), finishedAt: text("finished_at"),
 });
 export const settings = sqliteTable("settings", { key: text("key").primaryKey(), value: text("value").notNull(), updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`) });
+
+export const oauthClients = sqliteTable("oauth_clients", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().default("ChatGPT"),
+  redirectUrisJson: text("redirect_uris_json").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  expiresAt: text("expires_at").notNull(),
+});
+
+export const oauthAuthorizationCodes = sqliteTable("oauth_authorization_codes", {
+  codeHash: text("code_hash").primaryKey(),
+  clientId: text("client_id").notNull(),
+  redirectUri: text("redirect_uri").notNull(),
+  codeChallenge: text("code_challenge").notNull(),
+  scope: text("scope").notNull(),
+  resource: text("resource").notNull(),
+  userEmail: text("user_email").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  usedAt: text("used_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("oauth_authorization_codes_client_idx").on(table.clientId, table.expiresAt),
+]);
+
+export const oauthRefreshTokens = sqliteTable("oauth_refresh_tokens", {
+  tokenHash: text("token_hash").primaryKey(),
+  clientId: text("client_id").notNull(),
+  scope: text("scope").notNull(),
+  resource: text("resource").notNull(),
+  userEmail: text("user_email").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  revokedAt: text("revoked_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("oauth_refresh_tokens_client_idx").on(table.clientId, table.expiresAt),
+]);

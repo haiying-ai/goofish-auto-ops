@@ -2,11 +2,14 @@ import { env } from "cloudflare:workers";
 import { emailStatus } from "../../../../lib/email";
 import { createXianyuSession } from "../../../../lib/xianyu-session";
 import { encryptionStatus } from "../../../../lib/secrets";
+import { requireOwnerAccess } from "../../../../lib/access";
 
 export const dynamic = "force-dynamic";
 type RuntimeEnv = { XIANYU_COOKIE?: string };
 
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   const cookie = (env as unknown as RuntimeEnv).XIANYU_COOKIE;
   if (!cookie) {
     return Response.json(

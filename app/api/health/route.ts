@@ -1,12 +1,15 @@
 import { env } from "cloudflare:workers";
 import { emailStatus } from "../../../lib/email";
 import { encryptionStatus } from "../../../lib/secrets";
+import { requireOwnerAccess } from "../../../lib/access";
 
 export const dynamic = "force-dynamic";
 
 type RuntimeEnv = { CRON_SECRET?: string; XIANYU_COOKIE?: string };
 
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   const runtime = env as unknown as RuntimeEnv;
   return Response.json({
     ok: true,

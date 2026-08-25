@@ -31,6 +31,7 @@ import {
   uploadListingImage,
 } from "./xianyu-items";
 import { createXianyuSession } from "./xianyu-session";
+import { AUTO_OPS_SCOPE } from "./oauth";
 
 type RuntimeEnv = { XIANYU_COOKIE?: string };
 type ProductRow = typeof products.$inferSelect;
@@ -68,7 +69,12 @@ const propertySchema = z.object({
 
 const resultSchema = { data: z.unknown() };
 
-export function createAutoOpsMcpServer() {
+export function createAutoOpsMcpServer(
+  authorizationHeader = "",
+  requestOrigin = "https://auto-ops.internal",
+) {
+  const apiRequest = (path: string, method: string, body?: unknown) =>
+    jsonRequest(path, method, body, authorizationHeader, requestOrigin);
   const server = new McpServer(
     { name: "xianyu-auto-ops", version: "2.0.0" },
     {
@@ -85,6 +91,7 @@ export function createAutoOpsMcpServer() {
         "查看商品状态、可用卡密、已发货订单和待处理订单的汇总。适合进入后台维护前先了解整体状态。",
       inputSchema: {},
       outputSchema: resultSchema,
+      _meta: oauthToolMeta(),
       annotations: readOnlyAnnotations,
     },
     async () => {
@@ -125,6 +132,7 @@ export function createAutoOpsMcpServer() {
         limit: z.number().int().min(1).max(200).default(50),
       },
       outputSchema: resultSchema,
+      _meta: oauthToolMeta(),
       annotations: readOnlyAnnotations,
     },
     async ({ keyword, status, delivery_status, delivery_type, limit }) => {
@@ -160,6 +168,7 @@ export function createAutoOpsMcpServer() {
         include_remote: z.boolean().default(false),
       },
       outputSchema: resultSchema,
+      _meta: oauthToolMeta(),
       annotations: { ...readOnlyAnnotations, openWorldHint: true },
     },
     async ({ product_id, include_remote }) => {
@@ -194,6 +203,7 @@ export function createAutoOpsMcpServer() {
         include_remote: z.boolean().default(true),
       },
       outputSchema: resultSchema,
+      _meta: oauthToolMeta(),
       annotations: { ...readOnlyAnnotations, openWorldHint: true },
     },
     async ({ product_id, include_remote }) => {
@@ -256,6 +266,7 @@ export function createAutoOpsMcpServer() {
         mime_type: z.enum(["image/png", "image/jpeg", "image/webp"]).default("image/png"),
       },
       outputSchema: resultSchema,
+      _meta: oauthToolMeta(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -296,6 +307,7 @@ export function createAutoOpsMcpServer() {
         properties: z.array(propertySchema).max(30).default([]),
       },
       outputSchema: resultSchema,
+      _meta: oauthToolMeta(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -304,7 +316,7 @@ export function createAutoOpsMcpServer() {
     },
     async (input) => {
       const response = await createProductRoute(
-        jsonRequest("/api/products", "POST", listingBody(input, true)),
+        apiRequest("/api/products", "POST", listingBody(input, true)),
       );
       const body = await requireJson(response);
       const product = body.product as ProductRow;
@@ -328,6 +340,7 @@ export function createAutoOpsMcpServer() {
         confirm_publish: z.literal(true).describe("仅在用户明确确认本次发布后传 true"),
       },
       outputSchema: resultSchema,
+      _meta: oauthToolMeta(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -338,7 +351,7 @@ export function createAutoOpsMcpServer() {
       const product = await requireProduct(product_id);
       requireExpectedTitle(product, expected_title);
       const response = await updateProductRoute(
-        jsonRequest("/api/products", "PATCH", {
+        apiRequest("/api/products", "PATCH", {
           id: product.id,
           action: "publish_listing",
           categoryReferenceItemId: category_reference_item_id || "",
@@ -379,6 +392,7 @@ export function createAutoOpsMcpServer() {
         properties: z.array(propertySchema).max(30).optional(),
       },
       outputSchema: resultSchema,
+      _meta: oauthToolMeta(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -392,7 +406,7 @@ export function createAutoOpsMcpServer() {
         throw new Error("该商品正在闲鱼出售；请在用户明确确认本次远程修改后将 confirm_remote_update 设为 true");
       }
       const response = await updateProductRoute(
-        jsonRequest("/api/products", "PATCH", {
+        apiRequest("/api/products", "PATCH", {
           ...listingBody(input, false),
           id: product.id,
           action: "edit_listing",
@@ -419,6 +433,7 @@ export function createAutoOpsMcpServer() {
         confirm_offline: z.literal(true).describe("仅在用户明确确认本次下架后传 true"),
       },
       outputSchema: resultSchema,
+      _meta: oauthToolMeta(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: true,
@@ -429,7 +444,7 @@ export function createAutoOpsMcpServer() {
       const product = await requireProduct(product_id);
       requireExpectedTitle(product, expected_title);
       const response = await takeProductOfflineRoute(
-        jsonRequest("/api/products", "DELETE", { id: product.id }),
+        apiRequest("/api/products", "DELETE", { id: product.id }),
       );
       const body = await requireJson(response);
       const updated = body.product as ProductRow;
@@ -453,10 +468,13 @@ export function createAutoOpsMcpServer() {
         include_fixed_text: z.boolean().default(false),
       },
       outputSchema: resultSchema,
+      _meta: oauthToolMeta(),
       annotations: readOnlyAnnotations,
     },
     async ({ product_id, delivery_type, configured, include_fixed_text }) => {
-      const body = await requireJson(await listDeliveryRulesRoute());
+      const body = await requireJson(
+        await listDeliveryRulesRoute(apiRequest("/api/delivery-rules", "GET")),
+      );
       const rows = Array.isArray(body.rules) ? (body.rules as JsonObject[]) : [];
       const filtered = rows
         .filter((row) => !product_id || Number(row.productId) === product_id)
@@ -487,6 +505,7 @@ export function createAutoOpsMcpServer() {
         confirm_configuration: z.literal(true),
       },
       outputSchema: resultSchema,
+      _meta: oauthToolMeta(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -497,7 +516,7 @@ export function createAutoOpsMcpServer() {
       const product = await requireProduct(input.product_id);
       const body = await requireJson(
         await configureDeliveryRuleRoute(
-          jsonRequest("/api/delivery-rules", "POST", {
+          apiRequest("/api/delivery-rules", "POST", {
             productId: product.id,
             specLabel: input.spec_label,
             deliveryType: input.delivery_type,
@@ -528,6 +547,7 @@ export function createAutoOpsMcpServer() {
         confirm_import: z.literal(true),
       },
       outputSchema: resultSchema,
+      _meta: oauthToolMeta(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -538,7 +558,7 @@ export function createAutoOpsMcpServer() {
       await requireProduct(product_id);
       const body = await requireJson(
         await importInventoryRoute(
-          jsonRequest("/api/inventory", "POST", {
+          apiRequest("/api/inventory", "POST", {
             productId: product_id,
             ruleId: rule_id,
             secrets: codes.join("\n"),
@@ -565,10 +585,13 @@ export function createAutoOpsMcpServer() {
         limit: z.number().int().min(1).max(100).default(50),
       },
       outputSchema: resultSchema,
+      _meta: oauthToolMeta(),
       annotations: readOnlyAnnotations,
     },
     async ({ keyword, status, include_delivery_content, limit }) => {
-      const body = await requireJson(await listOrdersRoute());
+      const body = await requireJson(
+        await listOrdersRoute(apiRequest("/api/orders", "GET")),
+      );
       const needle = String(keyword || "").toLocaleLowerCase();
       const rows = (Array.isArray(body.orders) ? body.orders : [])
         .filter((row: JsonObject) => !status || row.status === status)
@@ -594,6 +617,7 @@ export function createAutoOpsMcpServer() {
         confirm_retry: z.literal(true),
       },
       outputSchema: resultSchema,
+      _meta: oauthToolMeta(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -603,7 +627,7 @@ export function createAutoOpsMcpServer() {
     async ({ order_id, mode }) => {
       const body = await requireJson(
         await updateOrderRoute(
-          jsonRequest("/api/orders", "PATCH", { id: order_id, action: mode }),
+          apiRequest("/api/orders", "PATCH", { id: order_id, action: mode }),
         ),
       );
       return toolResult({ data: body }, `订单 ${order_id} 已重新加入发货流程。`);
@@ -618,6 +642,7 @@ export function createAutoOpsMcpServer() {
         "从闲鱼账号同步在售、已售出和已下架商品，并在完整扫描后修正 Auto Ops 中已不在售的状态。不会改变闲鱼端商品。",
       inputSchema: {},
       outputSchema: resultSchema,
+      _meta: oauthToolMeta(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -625,7 +650,9 @@ export function createAutoOpsMcpServer() {
       },
     },
     async () => {
-      const body = await requireJson(await syncProductsRoute());
+      const body = await requireJson(
+        await syncProductsRoute(apiRequest("/api/xianyu/items", "POST")),
+      );
       return toolResult({ data: body }, `同步完成，共读取 ${Number(body.synced || 0)} 件闲鱼商品。`);
     },
   );
@@ -642,6 +669,7 @@ export function createAutoOpsMcpServer() {
         confirm_execution: z.boolean().default(false),
       },
       outputSchema: resultSchema,
+      _meta: oauthToolMeta(),
       annotations: {
         readOnlyHint: false,
         destructiveHint: false,
@@ -652,11 +680,10 @@ export function createAutoOpsMcpServer() {
       if (!dry_run && !confirm_execution) {
         throw new Error("实际运行可能发布排队商品并向买家发货；请在用户明确确认后将 confirm_execution 设为 true");
       }
-      const request = jsonRequest("/api/jobs/run", "POST", {
+      const request = apiRequest("/api/jobs/run", "POST", {
         dryRun: dry_run,
         productId: product_id,
       });
-      request.headers.set("oai-authenticated-user-email", "mcp-owner");
       const body = await requireJson(await runAutomationRoute(request));
       return toolResult(
         { data: body },
@@ -681,12 +708,26 @@ function toolResult(structuredContent: JsonObject, text: string) {
   };
 }
 
-function jsonRequest(path: string, method: string, body?: unknown) {
-  return new Request(`https://auto-ops.internal${path}`, {
+function jsonRequest(
+  path: string,
+  method: string,
+  body?: unknown,
+  authorizationHeader = "",
+  requestOrigin = "https://auto-ops.internal",
+) {
+  const headers = new Headers({ "content-type": "application/json" });
+  if (authorizationHeader) headers.set("authorization", authorizationHeader);
+  return new Request(`${requestOrigin}${path}`, {
     method,
-    headers: { "content-type": "application/json" },
+    headers,
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
+}
+
+function oauthToolMeta() {
+  return {
+    securitySchemes: [{ type: "oauth2", scopes: [AUTO_OPS_SCOPE] }],
+  };
 }
 
 async function requireJson(response: Response): Promise<JsonObject> {

@@ -2,10 +2,13 @@ import {
   normalizeApiDeliveryConfig,
   testApiDeliveryConfig,
 } from "../../../../lib/api-delivery";
+import { requireOwnerAccess } from "../../../../lib/access";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const input = (await request.json()) as { config?: unknown };
     const result = await testApiDeliveryConfig(

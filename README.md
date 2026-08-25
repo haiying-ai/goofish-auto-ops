@@ -23,15 +23,16 @@
 
 ## ChatGPT / Codex 跨会话访问
 
-站点在 `/mcp` 提供标准 Streamable HTTP MCP 服务，并由 Sites OAuth 保护。
-后台可以继续保持仅所有者可访问；不要把站点改成公网，也不需要在会话之间复制浏览器
-Cookie、ChatGPT 登录态或临时 SIWC 令牌。
+站点在 `/api/mcp` 提供标准 Streamable HTTP MCP 服务，并由应用自身的 OAuth 2.1、授权码
+PKCE、短期访问令牌和轮换刷新令牌保护。Sites 需要允许公网到达 OAuth 与 MCP 端点；后台
+API 仍由“使用 ChatGPT 登录 + 所有者邮箱白名单”保护，公网可达不等于数据公开。不要在
+会话之间复制浏览器 Cookie、ChatGPT 登录态、Sites 令牌或 OAuth 令牌。
 
 在 ChatGPT 中只需完成一次连接：
 
 1. 在“设置 → 安全”中启用开发者模式。
 2. 打开 ChatGPT 的“插件”，点击 `+` 新建连接。
-3. 填写 Sites 为本项目返回的 MCP 连接地址并完成 OAuth 授权。
+3. 填写 `https://xianyu-auto-ops.sunbingbing-cn.chatgpt.site/api/mcp` 并完成 OAuth 授权。
 4. 新会话从工具菜单选择 **Auto Ops** 即可使用；工作区管理员还可以把该连接发布给整个工作区。
 
 MCP 暴露商品查询、经营指标、图片上传、草稿创建、确认发布、修改、下架、自动发货
@@ -50,6 +51,7 @@ MCP 暴露商品查询、经营指标、图片上传、草稿创建、确认发�
   - `CRON_SECRET`：Cron 调用密钥
   - `RESEND_API_KEY`：Resend 免费邮件 API 密钥，用于缺配置告警
   - `DATA_ENCRYPTION_KEY`：至少 32 字节随机密钥，用于加密 D1 中的发货资料
+  - `AUTO_OPS_OWNER_EMAIL`：唯一允许进入后台并批准 OAuth 的 ChatGPT 账号邮箱
   - `ALERT_EMAIL`：可选，告警收件人；默认 `bingsun2020@163.com`
   - `ALERT_FROM_EMAIL`：可选，已验证的发件地址；默认使用 Resend 测试发件人
 

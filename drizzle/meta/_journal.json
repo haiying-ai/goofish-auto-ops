@@ -29,6 +29,13 @@
       "when": 1787624540078,
       "tag": "0003_dusty_archangel",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1787638200296,
+      "tag": "0004_motionless_energizer",
+      "breakpoints": true
     }
   ]
 }
