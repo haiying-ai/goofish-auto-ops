@@ -1,21 +1,17 @@
-import { env } from "cloudflare:workers";
-import { createXianyuSession } from "../../../../lib/xianyu-session";
+import { createConfiguredXianyuSession } from "../../../../lib/xianyu-session";
 import { getListingDetails } from "../../../../lib/xianyu-items";
+import { requireOwnerAccess } from "../../../../lib/access";
 
 export const dynamic = "force-dynamic";
-type RuntimeEnv = { XIANYU_COOKIE?: string };
-
 export async function GET(request: Request) {
-  const cookie = (env as unknown as RuntimeEnv).XIANYU_COOKIE;
-  if (!cookie) {
-    return Response.json({ error: "尚未配置闲鱼 Cookie" }, { status: 503 });
-  }
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   const itemId = new URL(request.url).searchParams.get("id")?.trim();
   if (!itemId) {
     return Response.json({ error: "缺少闲鱼商品编号" }, { status: 400 });
   }
   try {
-    const session = await createXianyuSession(cookie);
+    const session = await createConfiguredXianyuSession();
     const item = await getListingDetails(session, itemId);
     return Response.json({ item });
   } catch (error) {

@@ -6,6 +6,7 @@ export type PendingSellerOrder = {
   orderId: string;
   itemId: string;
   itemTitle: string;
+  specText: string;
   buyerId: string;
   buyerNick: string;
   quantity: number;
@@ -59,16 +60,50 @@ export function parseSellerOrder(value: unknown): PendingSellerOrder {
   const buyer = objectValue(item.buyerInfoVO);
   const price = objectValue(item.priceVO);
   const itemInfo = objectValue(item.itemVO);
+  const sku = objectValue(item.skuVO);
+  const specText = firstText(
+    sku.skuText,
+    sku.skuName,
+    sku.properties,
+    itemInfo.skuText,
+    itemInfo.skuName,
+    itemInfo.skuDesc,
+    itemInfo.specName,
+    common.skuText,
+    price.skuText,
+  );
   return {
     orderId: String(common.orderId || ""),
     itemId: String(common.itemId || ""),
     itemTitle: String(itemInfo.title || itemInfo.itemTitle || ""),
+    specText,
     buyerId: String(buyer.buyerId || ""),
     buyerNick: String(buyer.userNick || ""),
     quantity: Math.max(1, Number(price.buyNum || 1)),
     statusText: String(common.orderStatus || ""),
     inRefund: booleanValue(common.inRefund),
   };
+}
+
+function firstText(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (Array.isArray(value) && value.length) {
+      const text = value
+        .map((entry) => {
+          const row = objectValue(entry);
+          const name = String(row.name || row.propertyName || "").trim();
+          const selected = String(
+            row.value || row.valueName || row.propertyValue || "",
+          ).trim();
+          return [name, selected].filter(Boolean).join("=");
+        })
+        .filter(Boolean)
+        .join(";");
+      if (text) return text;
+    }
+  }
+  return "";
 }
 
 export async function confirmVirtualShipment(

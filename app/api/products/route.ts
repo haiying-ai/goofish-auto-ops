@@ -1,7 +1,12 @@
-import { env } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { getDb } from "../../../db";
-import { products } from "../../../db/schema";
+import {
+  automationRuns,
+  deliveryRules,
+  inventory,
+  orders,
+  products,
+} from "../../../db/schema";
 import {
   editListing,
   normalizeListingImages,
@@ -14,24 +19,42 @@ import {
   type ListingSku,
   type ShippingMode,
 } from "../../../lib/xianyu-items";
-import { createXianyuSession } from "../../../lib/xianyu-session";
+import { createConfiguredXianyuSession } from "../../../lib/xianyu-session";
+import { encryptSecret } from "../../../lib/secrets";
+import { requireOwnerAccess } from "../../../lib/access";
 
-type RuntimeEnv = { XIANYU_COOKIE?: string };
 type ProductRow = typeof products.$inferSelect;
 
 export async function POST(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const input = (await request.json()) as Record<string, unknown>;
     const listing = readListingInput(input);
-    const [row] = await getDb()
+    const db = getDb();
+    const deliveryContent = String(input.deliveryContent || "").trim();
+    let [row] = await db
       .insert(products)
       .values({
         ...listingValues(listing),
         deliveryType: input.deliveryType === "inventory" ? "inventory" : "text",
-        deliveryContent: String(input.deliveryContent || "").trim(),
-        status: "queued",
+        deliveryContent: "",
+        status: input.publishMode === "draft" ? "draft" : "queued",
       })
       .returning();
+    if (deliveryContent) {
+      [row] = await db
+        .update(products)
+        .set({
+          deliveryContent: await encryptSecret(
+            "product-delivery",
+            row.id,
+            deliveryContent,
+          ),
+        })
+        .where(eq(products.id, row.id))
+        .returning();
+    }
     return Response.json({ product: row }, { status: 201 });
   } catch (error) {
     return Response.json(
@@ -42,6 +65,8 @@ export async function POST(request: Request) {
 }
 
 export async function PATCH(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const input = (await request.json()) as Record<string, unknown>;
     const id = Number(input.id);
@@ -50,13 +75,21 @@ export async function PATCH(request: Request) {
     if (input.action === "publish_listing") {
       const current = await findProduct(id);
       if (!current) return Response.json({ error: "商品不存在" }, { status: 404 });
-      if (current.status !== "queued" && current.status !== "failed") {
+      if (
+        current.status !== "draft" &&
+        current.status !== "queued" &&
+        current.status !== "failed"
+      ) {
         return Response.json(
-          { error: "只有待发布或发布失败的商品可以立即上架" },
+          { error: "只有草稿、待发布或发布失败的商品可以立即上架" },
           { status: 409 },
         );
       }
-      const remote = await publishListing(await requiredSession(), productListing(current));
+      const remote = await publishListing(
+        await requiredSession(),
+        productListing(current),
+        String(input.categoryReferenceItemId || "").trim(),
+      );
       const [row] = await getDb()
         .update(products)
         .set({
@@ -101,7 +134,11 @@ export async function PATCH(request: Request) {
           deliveryContent:
             input.deliveryContent === undefined
               ? current.deliveryContent
-              : String(input.deliveryContent || "").trim(),
+              : await encryptSecret(
+                  "product-delivery",
+                  current.id,
+                  String(input.deliveryContent || "").trim(),
+                ),
           status: current.status === "failed" ? "queued" : current.status,
           lastError: null,
           updatedAt: new Date().toISOString(),
@@ -118,7 +155,11 @@ export async function PATCH(request: Request) {
       .update(products)
       .set({
         deliveryType: input.deliveryType === "inventory" ? "inventory" : "text",
-        deliveryContent: String(input.deliveryContent || "").trim(),
+        deliveryContent: await encryptSecret(
+          "product-delivery",
+          id,
+          String(input.deliveryContent || "").trim(),
+        ),
         updatedAt: new Date().toISOString(),
       })
       .where(eq(products.id, id))
@@ -133,12 +174,60 @@ export async function PATCH(request: Request) {
 }
 
 export async function DELETE(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
-    const input = (await request.json()) as { id?: number };
+    const input = (await request.json()) as {
+      id?: number;
+      action?: string;
+      expectedTitle?: string;
+      confirmDelete?: boolean;
+    };
     const id = Number(input.id);
     if (!id) return Response.json({ error: "商品编号无效" }, { status: 400 });
     const current = await findProduct(id);
     if (!current) return Response.json({ error: "商品不存在" }, { status: 404 });
+    if (input.action === "delete_draft") {
+      if (input.confirmDelete !== true) {
+        return Response.json({ error: "删除草稿需要明确确认" }, { status: 400 });
+      }
+      if (String(input.expectedTitle || "").trim() !== current.title.trim()) {
+        return Response.json(
+          { error: `标题核对失败：当前标题为「${current.title}」` },
+          { status: 409 },
+        );
+      }
+      if (current.status !== "draft" || current.xianyuItemId) {
+        return Response.json(
+          { error: "只允许永久删除尚未发布且没有闲鱼商品编号的草稿" },
+          { status: 409 },
+        );
+      }
+      const db = getDb();
+      const [linkedOrders, linkedRuns] = await Promise.all([
+        db.select({ id: orders.id }).from(orders).where(eq(orders.productId, id)).limit(1),
+        db
+          .select({ id: automationRuns.id })
+          .from(automationRuns)
+          .where(eq(automationRuns.productId, id))
+          .limit(1),
+      ]);
+      if (linkedOrders.length || linkedRuns.length) {
+        return Response.json(
+          { error: "该草稿已有订单或自动化记录，不能永久删除" },
+          { status: 409 },
+        );
+      }
+      await db.batch([
+        db.delete(inventory).where(eq(inventory.productId, id)),
+        db.delete(deliveryRules).where(eq(deliveryRules.productId, id)),
+        db.delete(products).where(eq(products.id, id)),
+      ]);
+      return Response.json({
+        deleted: true,
+        product: { id: current.id, title: current.title, status: current.status },
+      });
+    }
     if (current.status === "published" && current.xianyuItemId) {
       await takeListingOffline(await requiredSession(), current.xianyuItemId);
     }
@@ -173,9 +262,7 @@ async function findProduct(id: number) {
 }
 
 async function requiredSession() {
-  const cookie = (env as unknown as RuntimeEnv).XIANYU_COOKIE;
-  if (!cookie) throw new Error("尚未配置闲鱼 Cookie");
-  return createXianyuSession(cookie);
+  return createConfiguredXianyuSession();
 }
 
 function readListingInput(

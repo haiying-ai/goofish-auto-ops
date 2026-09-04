@@ -1,14 +1,30 @@
 import { eq } from "drizzle-orm";
 import { getDb } from "../db";
 import { settings } from "../db/schema";
-import { createXianyuSession } from "./xianyu-session";
+import {
+  createXianyuSession,
+  recordXianyuUploadAuthState,
+  XianyuAuthenticationError,
+} from "./xianyu-session";
 
 const WRITE_INTERVAL_MS = 60_000;
 const WRITE_SETTING_KEY = "xianyu_last_write_at";
-const UPLOAD_URL =
-  "https://stream-upload.goofish.com/api/upload.api?floderId=0&appkey=fleamarket&_input_charset=utf-8";
+const UPLOAD_ENDPOINT = "https://stream-upload.goofish.com/api/upload.api";
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151.0 Safari/537.36";
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
+const UPLOAD_PROFILES = [
+  {
+    appKey: "xy_chat",
+    origin: "https://www.goofish.com",
+    referer: "https://www.goofish.com/",
+  },
+  {
+    appKey: "fleamarket",
+    origin: "https://seller.goofish.com",
+    referer: "https://seller.goofish.com/?site=COMMONPRO",
+  },
+] as const;
 
 export type XianyuSession = Awaited<ReturnType<typeof createXianyuSession>>;
 
@@ -99,53 +115,292 @@ export async function uploadListingImage(
   session: XianyuSession,
   file: Blob,
   filename = "listing.png",
+  recoveryAttempted = false,
 ): Promise<UploadedImage> {
-  const form = new FormData();
-  form.append("file", file, filename);
-  const response = await fetch(UPLOAD_URL, {
-    method: "POST",
-    headers: {
-      accept: "*/*",
-      origin: "https://www.goofish.com",
-      referer: "https://www.goofish.com/",
-      cookie: session.cookieHeader(),
-      "user-agent": USER_AGENT,
-    },
-    body: form,
-  });
-  if (!response.ok) throw new Error(`闲鱼图片上传 HTTP ${response.status}`);
-  const raw = (await response.json()) as {
-    success?: boolean;
-    message?: string;
-    object?: {
-      url?: string;
-      pix?: string;
-      width?: number | string;
-      height?: number | string;
-    };
-  };
-  const object = raw.object || {};
-  const [pixWidth, pixHeight] = String(object.pix || "0x0")
-    .split("x")
-    .map(Number);
-  const url = normalizeListingImageUrl(object.url);
-  const width = Number(object.width || pixWidth || 0);
-  const height = Number(object.height || pixHeight || 0);
-  if (!url || width < 1 || height < 1) {
-    throw new Error(raw.message || "闲鱼图片上传未返回有效地址或尺寸");
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  if (!bytes.length || bytes.length > MAX_UPLOAD_BYTES) {
+    throw new Error("图片大小必须在 5MB 以内");
   }
-  return { url, width, height };
+  const imageType = detectImageType(bytes);
+  if (!imageType) {
+    throw new Error("图片内容不是有效的 PNG、JPEG、WebP 或 HEIC");
+  }
+  const safeFilename = safeUploadFilename(filename, imageType.extension);
+  const failures: string[] = [];
+  let authenticationFailures = 0;
+  const cookieNames = new Set(
+    session
+      .cookieHeader()
+      .split(";")
+      .map((part) => {
+        const index = part.indexOf("=");
+        return index > 0 ? part.slice(0, index).trim() : "";
+      })
+      .filter(Boolean),
+  );
+  const missingUploadCookies = [
+    "unb",
+    "_m_h5_tk",
+    "_m_h5_tk_enc",
+    "cookie2",
+    "sgcookie",
+    "cna",
+    "t",
+    "_tb_token_",
+  ].filter((name) => !cookieNames.has(name));
+
+  for (const profile of UPLOAD_PROFILES) {
+    const url = new URL(UPLOAD_ENDPOINT);
+    url.searchParams.set("floderId", "0");
+    url.searchParams.set("appkey", profile.appKey);
+    url.searchParams.set("_input_charset", "utf-8");
+    const multipart = createMultipartBody(
+      bytes,
+      safeFilename,
+      imageType.mimeType,
+    );
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        accept: "application/json, text/javascript, */*; q=0.01",
+        origin: profile.origin,
+        referer: profile.referer,
+        cookie: session.cookieHeader(),
+        "content-type": multipart.contentType,
+        "user-agent": USER_AGENT,
+        "x-requested-with": "XMLHttpRequest",
+      },
+      body: multipart.body,
+    });
+    await session.absorbResponseCookies(response.headers);
+    const responseText = await response.text();
+    const raw = parseUploadResponse(responseText);
+    const object = raw?.object || raw?.data || {};
+    const [pixWidth, pixHeight] = String(object.pix || "0x0")
+      .toLowerCase()
+      .split("x")
+      .map(Number);
+    const uploadedUrl = normalizeListingImageUrl(object.url || raw?.url);
+    const width = Number(object.width || pixWidth || 0);
+    const height = Number(object.height || pixHeight || 0);
+    if (
+      response.ok &&
+      raw?.success !== false &&
+      uploadedUrl &&
+      width > 0 &&
+      height > 0
+    ) {
+      await recordXianyuUploadAuthState(true).catch(() => undefined);
+      return { url: uploadedUrl, width, height };
+    }
+
+    if (
+      uploadResponseRequiresAuthentication(
+        responseText,
+        response.url,
+        response.redirected,
+      )
+    ) {
+      authenticationFailures += 1;
+    }
+
+    const upstreamMessage = uploadFailureMessage(
+      response.status,
+      raw?.message,
+      responseText,
+      response.url,
+      response.redirected,
+    );
+    failures.push(`${profile.appKey}: ${upstreamMessage}`);
+  }
+
+  const cookieHint = missingUploadCookies.length
+    ? `；当前 Cookie 缺少 ${missingUploadCookies.join("、")}`
+    : "";
+  const message = `闲鱼图片上传失败（${failures.join("；")}）${cookieHint}`;
+  if (authenticationFailures === UPLOAD_PROFILES.length) {
+    if (!recoveryAttempted) {
+      try {
+        await session.scheduledKeepAlive();
+        return uploadListingImage(
+          session,
+          new Blob([bytes], { type: imageType.mimeType }),
+          safeFilename,
+          true,
+        );
+      } catch {
+        // The final AUTH_REQUIRED below is clearer and preserves the original
+        // upload diagnostics without exposing any session material.
+      }
+    }
+    await recordXianyuUploadAuthState(false, "AUTH_REQUIRED").catch(
+      () => undefined,
+    );
+    throw new XianyuAuthenticationError(
+      `${message}。系统已自动续期并重试，长期登录仍不可用；请仅在此时到 Auto Ops「系统设置」重新登录一次，无需转换图片格式。`,
+    );
+  }
+  throw new Error(message);
+}
+
+type UploadResponse = {
+  success?: boolean;
+  message?: string;
+  url?: string;
+  object?: {
+    url?: string;
+    pix?: string;
+    width?: number | string;
+    height?: number | string;
+  };
+  data?: {
+    url?: string;
+    pix?: string;
+    width?: number | string;
+    height?: number | string;
+  };
+};
+
+function parseUploadResponse(value: string): UploadResponse | null {
+  try {
+    const parsed = JSON.parse(value) as UploadResponse;
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function uploadFailureMessage(
+  status: number,
+  message?: string,
+  body = "",
+  responseUrl = "",
+  redirected = false,
+) {
+  const normalized = String(message || "").trim();
+  if (/INVALID_ARGUMENT|ILLEGAL_ARGUMENT/i.test(`${normalized} ${body}`)) {
+    return `HTTP ${status} 闲鱼拒绝当前上传场景参数`;
+  }
+  if (normalized) return `HTTP ${status} ${normalized.slice(0, 160)}`;
+  if (/<!doctype html|<html/i.test(body)) {
+    const title = body.match(/<title[^>]*>([^<]{1,120})<\/title>/i)?.[1]
+      ?.replace(/\s+/g, " ")
+      .trim();
+    const destination = safeResponseDestination(responseUrl);
+    const details = [
+      title ? `页面“${title}”` : "HTML 页面",
+      redirected && destination ? `跳转至 ${destination}` : "",
+    ].filter(Boolean);
+    return `HTTP ${status} 登录状态无效或被风控拦截（${details.join("，")}）`;
+  }
+  return `HTTP ${status} 未返回有效图片地址`;
+}
+
+function uploadResponseRequiresAuthentication(
+  body: string,
+  responseUrl: string,
+  redirected: boolean,
+) {
+  const destination = safeResponseDestination(responseUrl);
+  return Boolean(
+    (redirected && /(?:^|\/)login(?:\.html)?(?:$|[/?])/i.test(destination)) ||
+      /passport\.goofish\.com|闲鱼[^<]{0,30}登录|使用淘宝登录/i.test(body),
+  );
+}
+
+function safeResponseDestination(value: string) {
+  try {
+    const url = new URL(value);
+    return `${url.hostname}${url.pathname}`.slice(0, 160);
+  } catch {
+    return "";
+  }
+}
+
+function safeUploadFilename(_filename: string, extension: string) {
+  return `publish_${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}.${extension}`;
+}
+
+function createMultipartBody(
+  bytes: Uint8Array,
+  filename: string,
+  mimeType: string,
+) {
+  const boundary = `----AutoOps${crypto.randomUUID().replaceAll("-", "")}`;
+  const encoder = new TextEncoder();
+  const prefix = encoder.encode(
+    `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n` +
+      `Content-Type: ${mimeType}\r\n\r\n`,
+  );
+  const suffix = encoder.encode(`\r\n--${boundary}--\r\n`);
+  const body = new Uint8Array(prefix.length + bytes.length + suffix.length);
+  body.set(prefix, 0);
+  body.set(bytes, prefix.length);
+  body.set(suffix, prefix.length + bytes.length);
+  return {
+    body,
+    contentType: `multipart/form-data; boundary=${boundary}`,
+  };
+}
+
+function detectImageType(bytes: Uint8Array) {
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return { mimeType: "image/png", extension: "png" };
+  }
+  if (
+    bytes.length >= 3 &&
+    bytes[0] === 0xff &&
+    bytes[1] === 0xd8 &&
+    bytes[2] === 0xff
+  ) {
+    return { mimeType: "image/jpeg", extension: "jpg" };
+  }
+  if (
+    bytes.length >= 12 &&
+    String.fromCharCode(...bytes.slice(0, 4)) === "RIFF" &&
+    String.fromCharCode(...bytes.slice(8, 12)) === "WEBP"
+  ) {
+    return { mimeType: "image/webp", extension: "webp" };
+  }
+  if (
+    bytes.length >= 12 &&
+    String.fromCharCode(...bytes.slice(4, 8)) === "ftyp" &&
+    /^(heic|heix|hevc|hevx|mif1|msf1)$/.test(
+      String.fromCharCode(...bytes.slice(8, 12)),
+    )
+  ) {
+    return { mimeType: "image/heic", extension: "heic" };
+  }
+  return null;
 }
 
 export async function publishListing(
   session: XianyuSession,
   input: ListingInput,
+  categoryReferenceItemId = "",
 ) {
   const images = await prepareImages(session, input.images);
   if (!images.length) throw new Error("至少需要一张有效商品图片");
   const [category, location] = await Promise.all([
     input.categoryMode === "manual" && input.categoryId
-      ? Promise.resolve(manualCategory(input))
+      ? categoryReferenceItemId
+        ? categoryFromReference(
+            session,
+            categoryReferenceItemId,
+            input.categoryId,
+          )
+        : Promise.resolve(manualCategory(input))
       : recommendCategory(session, input.title, images, input.skus.length > 0),
     getDefaultLocation(session),
   ]);
@@ -158,6 +413,25 @@ export async function publishListing(
   const itemId = String(raw.data?.itemId || "");
   if (!itemId) throw new Error("闲鱼发布成功响应中缺少商品编号");
   return { itemId, images, raw };
+}
+
+async function categoryFromReference(
+  session: XianyuSession,
+  itemId: string,
+  expectedCategoryId: string,
+) {
+  const raw = await session.call(
+    "mtop.idle.pc.idleitem.editDetail",
+    { itemId },
+    { spm: "a21ybx.publish.0.0" },
+  );
+  const category = objectValue(raw.data?.itemCatDTO);
+  const categoryId = String(category.catId || "");
+  if (!categoryId) throw new Error("参考商品未返回有效闲鱼类目");
+  if (expectedCategoryId && categoryId !== expectedCategoryId) {
+    throw new Error("参考商品类目与草稿指定类目不一致");
+  }
+  return category;
 }
 
 export async function editListing(
@@ -237,6 +511,7 @@ export async function getListingDetails(
       .catch(() => null),
   ]);
   const track = objectValue(detail.data?.trackParams);
+  const item = objectValue(detail.data?.itemDO);
   const editable = objectValue(editDetail?.data);
   const text = objectValue(editable.itemTextDTO);
   const price = objectValue(editable.itemPriceDTO);
@@ -265,7 +540,46 @@ export async function getListingDetails(
     properties: normalizeRemoteProperties(editable.itemProperties),
     itemStatus: String(editable.itemStatus ?? track.itemStatus ?? ""),
     images: normalizeListingImages(imageRows),
+    engagement: {
+      views: firstMetric(
+        item.browseCount,
+        item.browseCnt,
+        item.viewCount,
+        track.browseCount,
+        track.browseCnt,
+        track.viewCount,
+      ),
+      wants: firstMetric(
+        item.wantCount,
+        item.wantCnt,
+        item.collectCount,
+        track.wantCount,
+        track.wantCnt,
+        track.collectCount,
+      ),
+      inquiries: firstMetric(
+        item.inquiryCount,
+        item.consultCount,
+        item.chatCount,
+        track.inquiryCount,
+        track.consultCount,
+      ),
+      sold: firstMetric(
+        item.soldCount,
+        item.tradeCount,
+        track.soldCount,
+        track.tradeCount,
+      ),
+    },
   };
+}
+
+function firstMetric(...values: unknown[]) {
+  for (const value of values) {
+    const number = Number(value);
+    if (Number.isFinite(number) && number >= 0) return number;
+  }
+  return null;
 }
 
 async function prepareImages(

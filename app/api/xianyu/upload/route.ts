@@ -1,10 +1,12 @@
-import { env } from "cloudflare:workers";
-import { createXianyuSession } from "../../../../lib/xianyu-session";
+import {
+  createConfiguredXianyuSession,
+  XianyuAuthenticationError,
+} from "../../../../lib/xianyu-session";
 import { uploadListingImage } from "../../../../lib/xianyu-items";
+import { requireOwnerAccess } from "../../../../lib/access";
 
 export const dynamic = "force-dynamic";
 
-type RuntimeEnv = { XIANYU_COOKIE?: string };
 const ALLOWED_TYPES = new Set([
   "image/png",
   "image/jpeg",
@@ -14,10 +16,8 @@ const ALLOWED_TYPES = new Set([
 ]);
 
 export async function POST(request: Request) {
-  const cookie = (env as unknown as RuntimeEnv).XIANYU_COOKIE;
-  if (!cookie) {
-    return Response.json({ error: "尚未配置闲鱼 Cookie" }, { status: 503 });
-  }
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     const form = await request.formData();
     const file = form.get("file");
@@ -36,13 +36,17 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    const session = await createXianyuSession(cookie);
+    const session = await createConfiguredXianyuSession();
     const image = await uploadListingImage(session, file, file.name);
     return Response.json({ success: true, image });
   } catch (error) {
+    const authRequired = error instanceof XianyuAuthenticationError;
     return Response.json(
-      { error: error instanceof Error ? error.message : "图片上传失败" },
-      { status: 502 },
+      {
+        error: error instanceof Error ? error.message : "图片上传失败",
+        code: authRequired ? "AUTH_REQUIRED" : "UPLOAD_FAILED",
+      },
+      { status: authRequired ? 401 : 502 },
     );
   }
 }

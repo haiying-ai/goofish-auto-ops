@@ -2,7 +2,34 @@ import SparkMD5 from "spark-md5";
 
 const APP_KEY = "34839810";
 const HOST = "https://h5api.m.goofish.com";
-const TOKEN_NAMES = ["_m_h5_tk", "_m_h5_tk_enc"] as const;
+const RENEWABLE_COOKIE_NAMES = [
+  "_m_h5_tk",
+  "_m_h5_tk_enc",
+  "cookie2",
+  "sgcookie",
+  "t",
+  "_tb_token_",
+  "cna",
+  "unb",
+  "uc1",
+  "cookie17",
+  "lgc",
+  "tracknick",
+  "havana_lgc",
+  "havana_lgc2_77",
+  "havana_login",
+  "csg",
+  "last_u_xianyu_web",
+  "last_cc",
+  "_uab_collina",
+  "isg",
+  "l",
+  "tfstk",
+  "xlly_s",
+  "thw",
+] as const;
+
+export type XianyuCookieUpdates = Record<string, string | null>;
 
 export type MtopCallOptions = {
   version?: string;
@@ -11,7 +38,10 @@ export type MtopCallOptions = {
   referer?: string;
   valueType?: string | null;
   headers?: Record<string, string>;
-  onTokenRefresh?: (cookie: string) => Promise<void> | void;
+  onCookieRefresh?: (
+    cookie: string,
+    updates: XianyuCookieUpdates,
+  ) => Promise<void> | void;
 };
 
 export function cookieValue(cookie: string, name: string) {
@@ -83,13 +113,14 @@ export async function mtop(
       data?: Record<string, unknown>;
     };
     const ret = (raw.ret || []).join(" | ");
-    const refreshedTokens = readMtopTokens(response.headers);
+    const refreshedCookies = readXianyuResponseCookies(response.headers);
+    const previousCookie = currentCookie;
+    currentCookie = mergeCookieUpdates(currentCookie, refreshedCookies);
     const hasNewToken = Boolean(
-      refreshedTokens._m_h5_tk || refreshedTokens._m_h5_tk_enc,
+      refreshedCookies._m_h5_tk || refreshedCookies._m_h5_tk_enc,
     );
-    if (hasNewToken) {
-      currentCookie = mergeCookieValues(currentCookie, refreshedTokens);
-      await options.onTokenRefresh?.(currentCookie);
+    if (currentCookie !== previousCookie) {
+      await options.onCookieRefresh?.(currentCookie, refreshedCookies);
     }
 
     if (!ret || ret.includes("SUCCESS")) return raw;
@@ -113,7 +144,7 @@ function normalizeMtopError(ret: string) {
   return ret;
 }
 
-function readMtopTokens(headers: Headers) {
+export function readXianyuResponseCookies(headers: Headers) {
   const getSetCookie = (
     headers as Headers & { getSetCookie?: () => string[] }
   ).getSetCookie;
@@ -121,13 +152,17 @@ function readMtopTokens(headers: Headers) {
     typeof getSetCookie === "function"
       ? getSetCookie.call(headers)
       : [headers.get("set-cookie") || ""];
-  const result: Record<string, string> = {};
-  for (const name of TOKEN_NAMES) {
-    const pattern = new RegExp(`(?:^|[,;]\\s*)${name}=([^;,\\s]+)`, "i");
+  const result: XianyuCookieUpdates = {};
+  for (const name of RENEWABLE_COOKIE_NAMES) {
+    const pattern = new RegExp(`(?:^|[,]\\s*)${escapePattern(name)}=([^;]*)`, "i");
     for (const value of values) {
       const match = value.match(pattern);
-      if (match?.[1]) {
-        result[name] = match[1];
+      if (match) {
+        const nextValue = String(match[1] || "").trim();
+        result[name] =
+          !nextValue || /^(?:deleted|null)$/i.test(nextValue)
+            ? null
+            : nextValue;
         break;
       }
     }
@@ -135,7 +170,35 @@ function readMtopTokens(headers: Headers) {
   return result;
 }
 
+export function mergeXianyuResponseCookies(cookie: string, headers: Headers) {
+  const updates = readXianyuResponseCookies(headers);
+  return {
+    cookie: mergeCookieUpdates(cookie, updates),
+    updates,
+  };
+}
+
+export function mergeCookieUpdates(
+  cookie: string,
+  updates: XianyuCookieUpdates,
+) {
+  const values = cookieMap(cookie);
+  for (const [name, value] of Object.entries(updates)) {
+    if (value === null) values.delete(name);
+    else if (value) values.set(name, value);
+  }
+  return serializeCookieMap(values);
+}
+
 function mergeCookieValues(cookie: string, updates: Record<string, string>) {
+  const values = cookieMap(cookie);
+  for (const [name, value] of Object.entries(updates)) {
+    if (value) values.set(name, value);
+  }
+  return serializeCookieMap(values);
+}
+
+function cookieMap(cookie: string) {
   const values = new Map<string, string>();
   for (const part of cookie.split(";")) {
     const trimmed = part.trim();
@@ -143,8 +206,15 @@ function mergeCookieValues(cookie: string, updates: Record<string, string>) {
     if (index < 1) continue;
     values.set(trimmed.slice(0, index), trimmed.slice(index + 1));
   }
-  for (const [name, value] of Object.entries(updates)) {
-    if (value) values.set(name, value);
-  }
-  return [...values.entries()].map(([name, value]) => `${name}=${value}`).join("; ");
+  return values;
+}
+
+function serializeCookieMap(values: Map<string, string>) {
+  return [...values.entries()]
+    .map(([name, value]) => `${name}=${value}`)
+    .join("; ");
+}
+
+function escapePattern(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

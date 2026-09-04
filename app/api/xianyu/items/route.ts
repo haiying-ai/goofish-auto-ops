@@ -1,4 +1,3 @@
-import { env } from "cloudflare:workers";
 import { desc, eq } from "drizzle-orm";
 import { getDb } from "../../../../db";
 import { products } from "../../../../db/schema";
@@ -6,11 +5,11 @@ import {
   normalizeListingImageUrl,
   type XianyuSession,
 } from "../../../../lib/xianyu-items";
-import { createXianyuSession } from "../../../../lib/xianyu-session";
+import { createConfiguredXianyuSession } from "../../../../lib/xianyu-session";
+import { requireOwnerAccess } from "../../../../lib/access";
 
 export const dynamic = "force-dynamic";
 
-type RuntimeEnv = { XIANYU_COOKIE?: string };
 type Card = {
   id?: string | number;
   title?: string;
@@ -142,7 +141,9 @@ function groupRequests(groups: ItemGroup[]) {
   return requests;
 }
 
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
     return Response.json({
       items: await getDb()
@@ -159,14 +160,11 @@ export async function GET() {
   }
 }
 
-export async function POST() {
-  const cookie = (env as unknown as RuntimeEnv).XIANYU_COOKIE;
-  if (!cookie) {
-    return Response.json({ error: "尚未配置闲鱼 Cookie" }, { status: 503 });
-  }
-
+export async function POST(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
   try {
-    const session = await createXianyuSession(cookie);
+    const session = await createConfiguredXianyuSession();
     const userId = session.cookieValue("unb");
     if (!userId) throw new Error("Cookie 缺少账号字段 unb");
 
@@ -208,9 +206,6 @@ export async function POST() {
           set: {
             title: item.title,
             priceCents: item.priceCents,
-            ...(item.image
-              ? { imagesJson: JSON.stringify([item.image]) }
-              : {}),
             status: item.status,
             lastError: null,
             updatedAt: now,
