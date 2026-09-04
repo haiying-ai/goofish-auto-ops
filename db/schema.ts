@@ -1,5 +1,12 @@
 import { sql } from "drizzle-orm";
-import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  index,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 
 export const products = sqliteTable("products", {
   id: integer("id").primaryKey({ autoIncrement: true }), title: text("title").notNull(),
@@ -15,21 +22,144 @@ export const products = sqliteTable("products", {
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`), updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [uniqueIndex("products_xianyu_item_id_uq").on(table.xianyuItemId)]);
 export const inventory = sqliteTable("inventory", {
-  id: integer("id").primaryKey({ autoIncrement: true }), productId: integer("product_id").notNull(), secret: text("secret").notNull(),
+  id: integer("id").primaryKey({ autoIncrement: true }), productId: integer("product_id").notNull(), ruleId: integer("rule_id"), secret: text("secret").notNull(), secretHash: text("secret_hash"),
   status: text("status").notNull().default("available"), orderId: text("order_id"), deliveredAt: text("delivered_at"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-});
+}, (table) => [index("inventory_rule_status_idx").on(table.ruleId, table.status)]);
 export const orders = sqliteTable("orders", {
   id: integer("id").primaryKey({ autoIncrement: true }), xianyuOrderId: text("xianyu_order_id").notNull(), productId: integer("product_id"),
-  xianyuItemId: text("xianyu_item_id"), buyerId: text("buyer_id"), buyerNick: text("buyer_nick"), quantity: integer("quantity").notNull().default(1),
-  rawStatus: text("raw_status"), status: text("status").notNull().default("pending"), deliveryContent: text("delivery_content"),
+  ruleId: integer("rule_id"), xianyuItemId: text("xianyu_item_id"), itemTitle: text("item_title"), specKey: text("spec_key").notNull().default(""), specText: text("spec_text").notNull().default(""),
+  buyerId: text("buyer_id"), buyerNick: text("buyer_nick"), quantity: integer("quantity").notNull().default(1),
+  rawStatus: text("raw_status"), status: text("status").notNull().default("pending"), deliveryType: text("delivery_type"), deliveryContent: text("delivery_content"),
   attempts: integer("attempts").notNull().default(0), lastError: text("last_error"), deliveredAt: text("delivered_at"),
   messageSentAt: text("message_sent_at"), shipmentConfirmedAt: text("shipment_confirmed_at"),
-  alertedAt: text("alerted_at"), alertReason: text("alert_reason"),
+  alertedAt: text("alerted_at"), failureAlertedAt: text("failure_alerted_at"), alertReason: text("alert_reason"), manualNote: text("manual_note"),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`), updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 }, (table) => [uniqueIndex("orders_xianyu_order_id_uq").on(table.xianyuOrderId)]);
+
+export const deliveryRules = sqliteTable("delivery_rules", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  productId: integer("product_id").notNull(),
+  specKey: text("spec_key").notNull().default(""),
+  specLabel: text("spec_label").notNull().default(""),
+  deliveryType: text("delivery_type").notNull().default("text"),
+  deliveryContent: text("delivery_content").notNull().default(""),
+  apiConfig: text("api_config").notNull().default(""),
+  lowStockThreshold: integer("low_stock_threshold").notNull().default(3),
+  lastLowStockLevel: integer("last_low_stock_level"),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  uniqueIndex("delivery_rules_product_spec_uq").on(table.productId, table.specKey),
+  index("delivery_rules_enabled_idx").on(table.productId, table.enabled),
+]);
+
+export const automationRuns = sqliteTable("automation_runs", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  triggerKey: text("trigger_key").notNull(),
+  orderId: integer("order_id").notNull(),
+  productId: integer("product_id"),
+  ruleId: integer("rule_id"),
+  status: text("status").notNull().default("pending"),
+  currentStep: text("current_step").notNull().default(""),
+  lastError: text("last_error"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  finishedAt: text("finished_at"),
+}, (table) => [
+  uniqueIndex("automation_runs_trigger_key_uq").on(table.triggerKey),
+  index("automation_runs_order_idx").on(table.orderId, table.updatedAt),
+]);
+
+export const automationSteps = sqliteTable("automation_steps", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  runId: integer("run_id").notNull(),
+  stepKey: text("step_key").notNull(),
+  actionType: text("action_type").notNull(),
+  status: text("status").notNull().default("pending"),
+  attempts: integer("attempts").notNull().default(0),
+  output: text("output").notNull().default(""),
+  lastError: text("last_error"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  finishedAt: text("finished_at"),
+}, (table) => [
+  uniqueIndex("automation_steps_run_step_uq").on(table.runId, table.stepKey),
+  index("automation_steps_status_idx").on(table.status, table.updatedAt),
+]);
 export const jobRuns = sqliteTable("job_runs", {
   id: integer("id").primaryKey({ autoIncrement: true }), job: text("job").notNull(), status: text("status").notNull(),
   summary: text("summary").notNull().default("{}"), startedAt: text("started_at").notNull().default(sql`CURRENT_TIMESTAMP`), finishedAt: text("finished_at"),
 });
 export const settings = sqliteTable("settings", { key: text("key").primaryKey(), value: text("value").notNull(), updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`) });
+
+export const oauthClients = sqliteTable("oauth_clients", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().default("ChatGPT"),
+  redirectUrisJson: text("redirect_uris_json").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  expiresAt: text("expires_at").notNull(),
+});
+
+export const oauthAuthorizationCodes = sqliteTable("oauth_authorization_codes", {
+  codeHash: text("code_hash").primaryKey(),
+  clientId: text("client_id").notNull(),
+  redirectUri: text("redirect_uri").notNull(),
+  codeChallenge: text("code_challenge").notNull(),
+  scope: text("scope").notNull(),
+  resource: text("resource").notNull(),
+  userEmail: text("user_email").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  usedAt: text("used_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("oauth_authorization_codes_client_idx").on(table.clientId, table.expiresAt),
+]);
+
+export const oauthRefreshTokens = sqliteTable("oauth_refresh_tokens", {
+  tokenHash: text("token_hash").primaryKey(),
+  clientId: text("client_id").notNull(),
+  scope: text("scope").notNull(),
+  resource: text("resource").notNull(),
+  userEmail: text("user_email").notNull(),
+  expiresAt: text("expires_at").notNull(),
+  revokedAt: text("revoked_at"),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("oauth_refresh_tokens_client_idx").on(table.clientId, table.expiresAt),
+]);
+
+export const imageUploads = sqliteTable("image_uploads", {
+  id: text("id").primaryKey(),
+  filename: text("filename").notNull(),
+  mimeType: text("mime_type").notNull(),
+  expectedBytes: integer("expected_bytes").notNull(),
+  receivedBytes: integer("received_bytes").notNull().default(0),
+  expectedSha256: text("expected_sha256"),
+  nextPart: integer("next_part").notNull().default(0),
+  status: text("status").notNull().default("receiving"),
+  uploadedUrl: text("uploaded_url"),
+  width: integer("width"),
+  height: integer("height"),
+  lastError: text("last_error"),
+  expiresAt: text("expires_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+  updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  index("image_uploads_expiry_idx").on(table.expiresAt),
+  index("image_uploads_status_idx").on(table.status, table.updatedAt),
+]);
+
+export const imageUploadChunks = sqliteTable("image_upload_chunks", {
+  uploadId: text("upload_id")
+    .notNull()
+    .references(() => imageUploads.id, { onDelete: "cascade" }),
+  partNumber: integer("part_number").notNull(),
+  dataBase64: text("data_base64").notNull(),
+  sizeBytes: integer("size_bytes").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+}, (table) => [
+  primaryKey({ columns: [table.uploadId, table.partNumber] }),
+  index("image_upload_chunks_upload_idx").on(table.uploadId, table.partNumber),
+]);

@@ -1,25 +1,36 @@
-import { env } from "cloudflare:workers";
 import { emailStatus } from "../../../../lib/email";
-import { createXianyuSession } from "../../../../lib/xianyu-session";
+import {
+  configuredXianyuCookie,
+  createXianyuSession,
+  xianyuUploadAuthState,
+} from "../../../../lib/xianyu-session";
+import { encryptionStatus } from "../../../../lib/secrets";
+import { requireOwnerAccess } from "../../../../lib/access";
 
 export const dynamic = "force-dynamic";
-type RuntimeEnv = { XIANYU_COOKIE?: string };
-
-export async function GET() {
-  const cookie = (env as unknown as RuntimeEnv).XIANYU_COOKIE;
-  if (!cookie) {
+export async function GET(request: Request) {
+  const denied = await requireOwnerAccess(request);
+  if (denied) return denied;
+  const configured = await configuredXianyuCookie();
+  const uploadAuth = await xianyuUploadAuthState();
+  if (!configured.cookie) {
     return Response.json(
       {
         valid: false,
         autoRenewal: true,
+        cookieSource: configured.source,
+        uploadReady: uploadAuth.ready,
+        uploadCheckedAt: uploadAuth.checkedAt,
+        requiresRenewal: true,
         email: emailStatus(),
+        encryptionConfigured: encryptionStatus(),
         error: "尚未配置闲鱼 Cookie",
       },
       { status: 503 },
     );
   }
 
-  const session = await createXianyuSession(cookie);
+  const session = await createXianyuSession(configured.cookie);
   try {
     const raw = await session.call(
       "mtop.taobao.idlemessage.pc.loginuser.get",
@@ -31,14 +42,24 @@ export async function GET() {
       valid: true,
       nick: String(user.nick || ""),
       accountConfigured: Boolean(session.cookieValue("unb")),
+      cookieSource: configured.source,
+      uploadReady: uploadAuth.ready,
+      uploadCheckedAt: uploadAuth.checkedAt,
+      requiresRenewal: uploadAuth.ready === false,
       email: emailStatus(),
+      encryptionConfigured: encryptionStatus(),
       ...session.tokenStatus(),
     });
   } catch (error) {
     return Response.json(
       {
         valid: false,
+        cookieSource: configured.source,
+        uploadReady: uploadAuth.ready,
+        uploadCheckedAt: uploadAuth.checkedAt,
+        requiresRenewal: true,
         email: emailStatus(),
+        encryptionConfigured: encryptionStatus(),
         error: error instanceof Error ? error.message : "登录验证失败",
         ...session.tokenStatus(),
       },
