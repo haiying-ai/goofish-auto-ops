@@ -1130,7 +1130,7 @@ function Delivery({
           <div className="panel-title">
             <div>
               <h2>发货规则</h2>
-              <p>按最近修改时间倒序，选择商品后可直接修改</p>
+              <p>仅显示未下架商品，按最近修改时间倒序</p>
             </div>
           </div>
           <div className="rule-list">
