@@ -1,4 +1,4 @@
-import { asc, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { getDb } from "../../../db";
 import { deliveryRules, inventory, products } from "../../../db/schema";
 import { normalizeApiDeliveryConfig } from "../../../lib/api-delivery";
@@ -19,8 +19,8 @@ export async function GET(request: Request) {
   try {
     const db = getDb();
     const [productRows, ruleRows, inventoryRows] = await Promise.all([
-      db.select().from(products).orderBy(asc(products.title)),
-      db.select().from(deliveryRules).orderBy(asc(deliveryRules.id)),
+      db.select().from(products),
+      db.select().from(deliveryRules),
       db
         .select({
           id: inventory.id,
@@ -55,6 +55,7 @@ export async function GET(request: Request) {
           lowStockThreshold: 3,
           enabled: true,
           legacy: true,
+          updatedAt: product.updatedAt,
           ...inventoryCounts(
             inventoryRows.filter(
               (row) => row.productId === product.id && row.ruleId === null,
@@ -75,11 +76,23 @@ export async function GET(request: Request) {
           xianyuItemId: product.xianyuItemId,
           productStatus: product.status,
           skuJson: product.skuJson,
+          updatedAt: exposed.updatedAt || product.updatedAt,
           apiConfig: parseJsonObject(exposed.apiConfig),
           ...inventoryCounts(pool),
         });
       }
     }
+    rows.sort((left, right) => {
+      const updatedDifference =
+        timestamp(right.updatedAt) - timestamp(left.updatedAt);
+      if (updatedDifference !== 0) return updatedDifference;
+      const productDifference = Number(right.productId) - Number(left.productId);
+      if (productDifference !== 0) return productDifference;
+      return String(left.specLabel || "").localeCompare(
+        String(right.specLabel || ""),
+        "zh-CN",
+      );
+    });
     return Response.json({ rules: rows });
   } catch (error) {
     return Response.json(
@@ -231,4 +244,9 @@ function parseJsonObject(value: unknown) {
   } catch {
     throw new Error("API 配置必须是有效 JSON");
   }
+}
+
+function timestamp(value: unknown) {
+  const parsed = Date.parse(String(value || ""));
+  return Number.isFinite(parsed) ? parsed : 0;
 }
