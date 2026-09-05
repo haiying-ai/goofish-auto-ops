@@ -9,6 +9,7 @@ import {
   mergeMtopTokens,
   mtop,
   readXianyuResponseCookies,
+  xianyuFetch,
   type MtopCallOptions,
   type XianyuCookieUpdates,
 } from "./xianyu";
@@ -349,7 +350,7 @@ export async function createXianyuSession(
     for (const initialUrl of SESSION_PAGE_URLS) {
       let url = new URL(initialUrl);
       for (let redirects = 0; redirects < 3; redirects += 1) {
-        const response = await fetch(url, {
+        const response = await xianyuFetch(url, {
           method: "GET",
           redirect: "manual",
           headers: {
@@ -360,7 +361,7 @@ export async function createXianyuSession(
             referer: "https://www.goofish.com/",
             "user-agent": USER_AGENT,
           },
-        });
+        }, "闲鱼强鉴权页");
         await absorbResponseCookies(response.headers);
         const location = response.headers.get("location");
         await response.body?.cancel();
@@ -385,7 +386,7 @@ export async function createXianyuSession(
     query: Record<string, string>,
     body?: URLSearchParams,
   ) {
-    const response = await fetch(`${url}?${new URLSearchParams(query)}`, {
+    const response = await xianyuFetch(`${url}?${new URLSearchParams(query)}`, {
       method: "POST",
       redirect: "manual",
       headers: {
@@ -400,7 +401,7 @@ export async function createXianyuSession(
         "user-agent": USER_AGENT,
       },
       ...(body ? { body } : {}),
-    });
+    }, "闲鱼登录续期接口");
     await absorbResponseCookies(response.headers);
     const text = await response.text();
     if (![200, 302, 303].includes(response.status)) {

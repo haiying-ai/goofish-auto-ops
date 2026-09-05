@@ -2,6 +2,7 @@ import SparkMD5 from "spark-md5";
 
 const APP_KEY = "34839810";
 const HOST = "https://h5api.m.goofish.com";
+const XIANYU_FETCH_TIMEOUT_MS = 7_000;
 const RENEWABLE_COOKIE_NAMES = [
   "_m_h5_tk",
   "_m_h5_tk_enc",
@@ -43,6 +44,22 @@ export type MtopCallOptions = {
     updates: XianyuCookieUpdates,
   ) => Promise<void> | void;
 };
+
+export async function xianyuFetch(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  operation = "闲鱼接口",
+) {
+  const signal = AbortSignal.timeout(XIANYU_FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(input, { ...init, signal });
+  } catch (error) {
+    if (signal.aborted) {
+      throw new Error(`${operation}请求超时（${XIANYU_FETCH_TIMEOUT_MS / 1_000}秒）`);
+    }
+    throw error;
+  }
+}
 
 export function cookieValue(cookie: string, name: string) {
   const part = cookie
@@ -92,7 +109,7 @@ export async function mtop(
     if (options.valueType) query.set("valueType", options.valueType);
     const origin = options.origin || "https://www.goofish.com";
     const referer = options.referer || `${origin}/`;
-    const response = await fetch(`${HOST}/h5/${api}/${version}/?${query}`, {
+    const response = await xianyuFetch(`${HOST}/h5/${api}/${version}/?${query}`, {
       method: "POST",
       headers: {
         accept: "application/json",
@@ -105,7 +122,7 @@ export async function mtop(
         ...options.headers,
       },
       body: new URLSearchParams({ data: body }),
-    });
+    }, `闲鱼接口 ${api}`);
     if (!response.ok) throw new Error(`闲鱼接口 HTTP ${response.status}`);
 
     const raw = (await response.json()) as {

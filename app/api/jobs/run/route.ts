@@ -79,6 +79,7 @@ type RunSummary = {
   plannedDeliveries: number;
   configurationAlerts: number;
   failureAlerts: number;
+  recoveryAlerts: number;
   lowStockAlerts: number;
   emailsSent: number;
   emailConfigurationRequired: boolean;
@@ -135,6 +136,23 @@ export async function POST(request: Request) {
       target: settings.key,
       set: { value: startedAt, updatedAt: startedAt },
     });
+  await db
+    .update(jobRuns)
+    .set({
+      status: "failed",
+      summary: JSON.stringify({
+        failed: 1,
+        recovered: true,
+        errors: ["任务超过执行窗口，已由下一轮自动回收"],
+      }),
+      finishedAt: startedAt,
+    })
+    .where(
+      and(
+        eq(jobRuns.status, "running"),
+        sql`datetime(${jobRuns.startedAt}) < datetime(${leaseCutoff})`,
+      ),
+    );
   const [run] = await db
     .insert(jobRuns)
     .values({ job: dryRun ? "all_dry_run" : "all", status: "running" })
@@ -148,6 +166,7 @@ export async function POST(request: Request) {
     plannedDeliveries: 0,
     configurationAlerts: 0,
     failureAlerts: 0,
+    recoveryAlerts: 0,
     lowStockAlerts: 0,
     emailsSent: 0,
     emailConfigurationRequired: !emailStatus().configured,
@@ -174,7 +193,7 @@ export async function POST(request: Request) {
     try {
       await session.scheduledKeepAlive();
       summary.sessionRenewed = true;
-      await clearKeepaliveFailureEpisode();
+      await clearKeepaliveFailureEpisode(summary);
     } catch (error) {
       keepaliveFailureHandled = true;
       await notifyKeepaliveFailureOnce(errorMessage(error), summary);
@@ -283,18 +302,23 @@ async function notifyKeepaliveFailureOnce(
   if (state.alertSent) return;
 
   try {
+    const requiresManualAction = keepaliveRequiresManualAction(message);
     const result = await sendOperationalAlert({
       eventKey: `xianyu-session-${state.episodeStartedAt}`,
-      subject: "闲鱼会话自动保活失败",
+      subject: requiresManualAction
+        ? "闲鱼会话已失效：需要人工更新"
+        : "闲鱼会话保活暂时失败：系统自动重试",
       lines: [
         "Auto Ops 在 /api/jobs/run 开始时自动续期闲鱼会话失败。",
         "",
-        `首次失败：${state.episodeStartedAt}`,
-        `本次失败：${now}`,
+        `首次失败（北京时间）：${formatAlertTime(state.episodeStartedAt)}`,
+        `本次失败（北京时间）：${formatAlertTime(now)}`,
         `错误：${message}`,
         "",
-        "同一轮连续故障只发送这一封邮件；恢复成功后才会重新布防。",
-        "请进入 Auto Ops「系统设置」更新一次闲鱼会话。",
+        requiresManualAction
+          ? "当前结论：需要人工处理。请进入 Auto Ops「系统设置」更新一次闲鱼会话。"
+          : "当前结论：暂不需要人工操作，系统会在下一轮定时任务自动重试。",
+        "会话恢复后会立即再发送一封恢复通知；同一轮连续失败不会重复提醒。",
       ],
     });
     if (result.configurationRequired) {
@@ -313,8 +337,48 @@ async function notifyKeepaliveFailureOnce(
   }
 }
 
-async function clearKeepaliveFailureEpisode() {
-  await getDb()
+async function clearKeepaliveFailureEpisode(summary: RunSummary) {
+  const db = getDb();
+  const [stored] = await db
+    .select({ value: settings.value })
+    .from(settings)
+    .where(eq(settings.key, KEEPALIVE_ALERT_SETTING_KEY))
+    .limit(1);
+  const state = parseKeepaliveAlertState(stored?.value);
+  if (!state) return;
+
+  if (state.alertSent) {
+    const recoveredAt = new Date().toISOString();
+    try {
+      const result = await sendOperationalAlert({
+        eventKey: `xianyu-session-recovered-${state.episodeStartedAt}`,
+        subject: "闲鱼会话已自动恢复：无需人工处理",
+        lines: [
+          "Auto Ops 已重新通过闲鱼会话校验和自动续期。",
+          "",
+          `故障开始（北京时间）：${formatAlertTime(state.episodeStartedAt)}`,
+          `最后失败（北京时间）：${formatAlertTime(state.lastFailedAt)}`,
+          `恢复时间（北京时间）：${formatAlertTime(recoveredAt)}`,
+          "",
+          "当前结论：无需人工操作，订单扫描与自动发货流程已继续运行。",
+          "本次故障告警已解除；后续出现新的独立故障时会重新提醒。",
+        ],
+      });
+      if (result.configurationRequired) {
+        summary.emailConfigurationRequired = true;
+        return;
+      }
+      if (result.sent) {
+        summary.emailsSent += 1;
+        summary.recoveryAlerts += 1;
+      }
+    } catch (error) {
+      summary.errors.push(`保活恢复邮件：${errorMessage(error)}`);
+      return;
+    }
+  }
+
+  await db
     .delete(settings)
     .where(eq(settings.key, KEEPALIVE_ALERT_SETTING_KEY));
 }
@@ -349,6 +413,28 @@ function parseKeepaliveAlertState(value?: string): KeepaliveAlertState | null {
   } catch {
     return null;
   }
+}
+
+function keepaliveRequiresManualAction(message: string) {
+  if (/请求超时|网络|HTTP 5\d\d/i.test(message)) return false;
+  return /AUTH_REQUIRED|SESSION_EXPIRED|FAIL_SYS_SESSION_EXPIRED|尚未配置闲鱼会话|登录.*失效|会话.*失效/i.test(
+    message,
+  );
+}
+
+function formatAlertTime(value: string) {
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return value;
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(date);
 }
 
 async function publishNextQueuedProduct(
