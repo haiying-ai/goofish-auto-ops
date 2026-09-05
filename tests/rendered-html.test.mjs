@@ -232,6 +232,10 @@ test("Xianyu upload auth failures are explicit and full session renewal is encry
   assert.match(cronSource, /notifyKeepaliveFailureOnce/);
   assert.match(cronSource, /if \(state\.alertSent\) return/);
   assert.match(cronSource, /clearKeepaliveFailureEpisode/);
+  assert.match(cronSource, /timeZone: "Asia\/Shanghai"/);
+  assert.match(cronSource, /闲鱼会话已自动恢复：无需人工处理/);
+  assert.match(cronSource, /recoveryAlerts/);
+  assert.match(cronSource, /keepaliveRequiresManualAction/);
   assert.match(cronSource, /xianyu-session-\$\{state\.episodeStartedAt\}/);
   assert.match(cronSource, /if \(!keepaliveFailureHandled\)/);
   assert.match(cronSource, /任务超过执行窗口，已由下一轮自动回收/);
@@ -400,14 +404,15 @@ test("delivery automation supports specification rules and API-generated content
   assert.match(apiDelivery, /API 发卡地址必须使用 HTTPS/);
 });
 
-test("delivery rules are returned with the most recently modified first", async () => {
+test("delivery rules hide offline products and show recent updates first", async () => {
   const [routeSource, pageSource] = await Promise.all([
     readFile(new URL("../app/api/delivery-rules/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
   ]);
   assert.match(routeSource, /timestamp\(right\.updatedAt\) - timestamp\(left\.updatedAt\)/);
+  assert.match(routeSource, /ne\(products\.status, "offline"\)/);
   assert.match(routeSource, /updatedAt: product\.updatedAt/);
-  assert.match(pageSource, /按最近修改时间倒序/);
+  assert.match(pageSource, /仅显示未下架商品，按最近修改时间倒序/);
 });
 
 test("sensitive fulfillment data is encrypted before D1 persistence", async () => {
@@ -451,4 +456,6 @@ test("low-stock and task failures use idempotent operational email alerts", asyn
   assert.match(cronSource, /sendTaskFailureAlert/);
   assert.match(emailSource, /sendOperationalAlert/);
   assert.match(emailSource, /Idempotency-Key/);
+  assert.match(emailSource, /EMAIL_SEND_TIMEOUT_MS = 5_000/);
+  assert.match(emailSource, /AbortSignal\.timeout\(EMAIL_SEND_TIMEOUT_MS\)/);
 });
