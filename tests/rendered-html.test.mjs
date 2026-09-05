@@ -400,6 +400,16 @@ test("delivery automation supports specification rules and API-generated content
   assert.match(apiDelivery, /API 发卡地址必须使用 HTTPS/);
 });
 
+test("delivery rules are returned with the most recently modified first", async () => {
+  const [routeSource, pageSource] = await Promise.all([
+    readFile(new URL("../app/api/delivery-rules/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  ]);
+  assert.match(routeSource, /timestamp\(right\.updatedAt\) - timestamp\(left\.updatedAt\)/);
+  assert.match(routeSource, /updatedAt: product\.updatedAt/);
+  assert.match(pageSource, /按最近修改时间倒序/);
+});
+
 test("sensitive fulfillment data is encrypted before D1 persistence", async () => {
   const [secrets, inventorySource, rulesSource, cronSource] = await Promise.all([
     readFile(new URL("../lib/secrets.ts", import.meta.url), "utf8"),
