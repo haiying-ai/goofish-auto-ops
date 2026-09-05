@@ -135,6 +135,23 @@ export async function POST(request: Request) {
       target: settings.key,
       set: { value: startedAt, updatedAt: startedAt },
     });
+  await db
+    .update(jobRuns)
+    .set({
+      status: "failed",
+      summary: JSON.stringify({
+        failed: 1,
+        recovered: true,
+        errors: ["任务超过执行窗口，已由下一轮自动回收"],
+      }),
+      finishedAt: startedAt,
+    })
+    .where(
+      and(
+        eq(jobRuns.status, "running"),
+        sql`datetime(${jobRuns.startedAt}) < datetime(${leaseCutoff})`,
+      ),
+    );
   const [run] = await db
     .insert(jobRuns)
     .values({ job: dryRun ? "all_dry_run" : "all", status: "running" })
