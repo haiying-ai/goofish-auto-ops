@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, ne } from "drizzle-orm";
 import { getDb } from "../../../db";
 import { deliveryRules, inventory, products } from "../../../db/schema";
 import { normalizeApiDeliveryConfig } from "../../../lib/api-delivery";
@@ -19,7 +19,7 @@ export async function GET(request: Request) {
   try {
     const db = getDb();
     const [productRows, ruleRows, inventoryRows] = await Promise.all([
-      db.select().from(products),
+      db.select().from(products).where(ne(products.status, "offline")),
       db.select().from(deliveryRules),
       db
         .select({
