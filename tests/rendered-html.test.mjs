@@ -459,3 +459,28 @@ test("low-stock and task failures use idempotent operational email alerts", asyn
   assert.match(emailSource, /EMAIL_SEND_TIMEOUT_MS = 5_000/);
   assert.match(emailSource, /AbortSignal\.timeout\(EMAIL_SEND_TIMEOUT_MS\)/);
 });
+
+test("dashboard reports real production health and safer manual execution", async () => {
+  const [healthSource, dashboardSource, healthRouteSource, pageSource] =
+    await Promise.all([
+      readFile(new URL("../lib/automation-health.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/api/dashboard/route.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/api/health/route.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    ]);
+
+  assert.match(healthSource, /CRON_STALE_AFTER_MS = 15 \* 60 \* 1000/);
+  assert.match(healthSource, /生产 Cron 已停止/);
+  assert.match(healthSource, /requiresManualAction/);
+  assert.match(dashboardSource, /eq\(jobRuns\.job, "all"\)/);
+  assert.match(dashboardSource, /automationHealth: deriveAutomationHealth/);
+  assert.match(healthRouteSource, /ok: automationHealth\.state !== "critical"/);
+  assert.match(pageSource, /window\.setInterval/);
+  assert.match(pageSource, /60_000/);
+  assert.match(pageSource, /真实订单扫描、自动发货和发布队列/);
+  assert.match(pageSource, /disabled=\{manualRunning\}/);
+  assert.match(pageSource, /timeZone: "Asia\/Shanghai"/);
+  assert.match(pageSource, /本轮耗时/);
+  assert.match(pageSource, /deleteDraft=\{deleteDraft\}/);
+  assert.match(pageSource, /deleteDraft: \(product: Product\) => Promise<boolean>/);
+});

@@ -1,8 +1,9 @@
 import { desc, eq, or, sql } from "drizzle-orm";
 import { getDb } from "../../../db";
-import { inventory, orders, products } from "../../../db/schema";
+import { inventory, jobRuns, orders, products, settings } from "../../../db/schema";
 import { decryptSecret } from "../../../lib/secrets";
 import { requireOwnerAccess } from "../../../lib/access";
+import { deriveAutomationHealth } from "../../../lib/automation-health";
 
 export const dynamic = "force-dynamic";
 
@@ -11,7 +12,7 @@ export async function GET(request: Request) {
   if (denied) return denied;
   try {
     const db = getDb();
-    const [rows, counts, stock, delivered, needsAttention] = await Promise.all([
+    const [rows, counts, stock, delivered, needsAttention, recentRuns, alertState] = await Promise.all([
       db.select().from(products).orderBy(desc(products.createdAt)),
       db
         .select({ status: products.status, count: sql<number>`count(*)` })
@@ -34,6 +35,17 @@ export async function GET(request: Request) {
             eq(orders.status, "needs_configuration"),
           ),
         ),
+      db
+        .select()
+        .from(jobRuns)
+        .where(eq(jobRuns.job, "all"))
+        .orderBy(desc(jobRuns.startedAt))
+        .limit(20),
+      db
+        .select({ value: settings.value })
+        .from(settings)
+        .where(eq(settings.key, "xianyu_keepalive_failure_alert"))
+        .limit(1),
     ]);
     const byStatus = Object.fromEntries(
       counts.map((row) => [row.status, Number(row.count)]),
@@ -60,6 +72,9 @@ export async function GET(request: Request) {
         delivered: Number(delivered[0]?.count || 0),
         needsAttention: Number(needsAttention[0]?.count || 0),
       },
+      automationHealth: deriveAutomationHealth(recentRuns, {
+        recoveryNoticePending: Boolean(alertState[0]?.value),
+      }),
     });
   } catch (error) {
     return Response.json(
