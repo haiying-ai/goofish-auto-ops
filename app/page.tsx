@@ -1,5 +1,5 @@
 "use client";
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 type ListingImage = { url: string; width?: number; height?: number };
 type Product = {
   id: number;
@@ -137,6 +137,19 @@ type SiteSession = {
   signInPath: string;
   signOutPath: string;
 };
+type AutomationHealth = {
+  state: "healthy" | "warning" | "critical" | "unknown";
+  label: string;
+  detail: string;
+  requiresManualAction: boolean;
+  action: string;
+  lastRunAt: string | null;
+  lastSuccessAt: string | null;
+  nextExpectedAt: string | null;
+  lastDurationMs: number | null;
+  consecutiveFailures: number;
+  sessionRenewed: boolean | null;
+};
 const nav = [
   "总览",
   "商品上架",
@@ -160,26 +173,30 @@ export default function Home() {
     [loading, setLoading] = useState(true),
     [notice, setNotice] = useState(""),
     [syncing, setSyncing] = useState(false),
+    [manualRunning, setManualRunning] = useState(false),
     [account, setAccount] = useState<Account | null>(null),
+    [automationHealth, setAutomationHealth] =
+      useState<AutomationHealth | null>(null),
     [session, setSession] = useState<SiteSession | null>(null);
-  async function json(url: string, init?: RequestInit) {
+  const json = useCallback(async (url: string, init?: RequestInit) => {
     const r = await fetch(url, { cache: "no-store", ...init }),
       d = await r.json();
     if (!r.ok) throw new Error(d.error || "操作失败");
     return d;
-  }
-  async function refresh() {
+  }, []);
+  const refresh = useCallback(async () => {
     setLoading(true);
     try {
       const d = await json("/api/dashboard");
       setProducts(d.products);
       setSummary(d.summary);
+      setAutomationHealth(d.automationHealth);
     } catch (e) {
       setNotice(message(e));
     } finally {
       setLoading(false);
     }
-  }
+  }, [json]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void json("/api/session")
@@ -194,7 +211,7 @@ export default function Home() {
         });
     }, 0);
     return () => window.clearTimeout(timer);
-  }, []);
+  }, [json, refresh]);
   useEffect(() => {
     if (!session?.authorized) return;
     if (active === "任务记录")
@@ -202,7 +219,18 @@ export default function Home() {
         .then((d) => setRuns(d.runs))
         .catch((e) => setNotice(message(e)));
     if (active === "系统设置") checkAccount();
-  }, [active, session?.authorized]);
+  }, [active, json, session?.authorized]);
+  useEffect(() => {
+    if (!session?.authorized) return;
+    const timer = window.setInterval(() => {
+      void refresh();
+      if (active === "任务记录")
+        void json("/api/jobs")
+          .then((d) => setRuns(d.runs))
+          .catch((e) => setNotice(message(e)));
+    }, 60_000);
+    return () => window.clearInterval(timer);
+  }, [active, json, refresh, session?.authorized]);
   async function checkAccount() {
     setAccount(null);
     try {
@@ -425,6 +453,14 @@ export default function Home() {
     }
   }
   async function runNow() {
+    if (manualRunning) return;
+    if (
+      !window.confirm(
+        "这会立即执行真实订单扫描、自动发货和发布队列。确认继续吗？",
+      )
+    )
+      return;
+    setManualRunning(true);
     try {
       const d = await json("/api/jobs/run", {
         method: "POST",
@@ -437,6 +473,8 @@ export default function Home() {
       await refresh();
     } catch (e) {
       setNotice(message(e));
+    } finally {
+      setManualRunning(false);
     }
   }
   if (!session) {
@@ -486,11 +524,17 @@ export default function Home() {
             </button>
           ))}
         </nav>
-        <div className="side-status">
+        <div className={`side-status ${automationHealth?.state || "unknown"}`}>
           <i />
           <div>
-            <b>自动任务正常</b>
-            <small>等待 Cron 定时触发</small>
+            <b>{automationHealth?.label || "正在读取运行状态"}</b>
+            <small>
+              {automationHealth
+                ? automationHealth.requiresManualAction
+                  ? "需要人工处理"
+                  : `最近运行 ${formatDate(automationHealth.lastRunAt)}`
+                : "请稍候"}
+            </small>
           </div>
         </div>
       </aside>
@@ -514,8 +558,8 @@ export default function Home() {
                 {syncing ? "正在同步…" : "↻ 同步闲鱼商品"}
               </button>
             )}
-            <button className="run" onClick={runNow}>
-              ▶ 立即执行
+            <button className="run" onClick={runNow} disabled={manualRunning}>
+              {manualRunning ? "正在执行…" : "▶ 立即执行"}
             </button>
           </div>
         </header>
@@ -531,6 +575,7 @@ export default function Home() {
             products={products}
             loading={loading}
             refresh={refresh}
+            automationHealth={automationHealth}
           />
         )}{" "}
         {active === "商品上架" && (
@@ -539,6 +584,7 @@ export default function Home() {
             addProduct={addProduct}
             editProduct={editProduct}
             takeOffline={takeOffline}
+            deleteDraft={deleteDraft}
             publishProduct={publishProduct}
             loadProduct={loadProduct}
             syncItems={syncItems}
@@ -611,11 +657,13 @@ function Overview({
   products,
   loading,
   refresh,
+  automationHealth,
 }: {
   summary: Summary;
   products: Product[];
   loading: boolean;
   refresh: () => void;
+  automationHealth: AutomationHealth | null;
 }) {
   return (
     <>
@@ -655,12 +703,35 @@ function Overview({
           </button>
         }
       />
-      <section className="panel cron">
+      <section className={`panel cron ${automationHealth?.state || "unknown"}`}>
         <div>
           <span className="pulse" />
           <div>
-            <h2>定时任务接口已就绪</h2>
-            <p>每 5 分钟自动检查发布队列和待发货订单。</p>
+            <h2>{automationHealth?.label || "正在读取生产任务状态"}</h2>
+            <p>
+              {automationHealth?.detail ||
+                "正在检查外部 Cron 与最近一次生产任务。"}
+            </p>
+            {automationHealth && (
+              <div className="health-meta">
+                <span>最近运行：{formatDate(automationHealth.lastRunAt)}</span>
+                <span>最近成功：{formatDate(automationHealth.lastSuccessAt)}</span>
+                <span>
+                  本轮耗时：{formatDuration(automationHealth.lastDurationMs)}
+                </span>
+                <span>
+                  会话续期：
+                  {automationHealth.sessionRenewed === null
+                    ? "无记录"
+                    : automationHealth.sessionRenewed
+                      ? "成功"
+                      : "未成功"}
+                </span>
+              </div>
+            )}
+            <p className="health-action">
+              {automationHealth?.action || "暂时无需操作。"}
+            </p>
           </div>
         </div>
         <code>POST /api/jobs/run</code>
@@ -673,6 +744,7 @@ function Listings({
   addProduct,
   editProduct,
   takeOffline,
+  deleteDraft,
   publishProduct,
   loadProduct,
   syncItems,
@@ -682,6 +754,7 @@ function Listings({
   addProduct: (e: FormEvent<HTMLFormElement>) => void;
   editProduct: (e: FormEvent<HTMLFormElement>) => Promise<boolean>;
   takeOffline: (product: Product) => Promise<boolean>;
+  deleteDraft: (product: Product) => Promise<boolean>;
   publishProduct: (product: Product) => Promise<boolean>;
   loadProduct: (product: Product) => Promise<Product>;
   syncItems: () => void;
@@ -1694,6 +1767,7 @@ function Jobs({ runs }: { runs: Run[] }) {
             <th>时间</th>
             <th>任务</th>
             <th>状态</th>
+            <th>耗时</th>
             <th>结果</th>
           </tr>
         </thead>
@@ -1701,10 +1775,19 @@ function Jobs({ runs }: { runs: Run[] }) {
           {runs.length ? (
             runs.map((r) => (
               <tr key={r.id}>
-                <td>{r.startedAt}</td>
-                <td>{r.job}</td>
+                <td>{formatDate(r.startedAt)}</td>
+                <td>{jobLabel(r.job)}</td>
                 <td>
                   <Status value={r.status} />
+                </td>
+                <td>
+                  {r.finishedAt
+                    ? formatDuration(
+                        timestamp(r.finishedAt) - timestamp(r.startedAt),
+                      )
+                    : r.status === "running"
+                      ? "执行中"
+                      : "—"}
                 </td>
                 <td>
                   <code>{formatRunSummary(r.summary)}</code>
@@ -1713,7 +1796,7 @@ function Jobs({ runs }: { runs: Run[] }) {
             ))
           ) : (
             <tr>
-              <td colSpan={4}>暂无执行记录</td>
+              <td colSpan={5}>暂无执行记录</td>
             </tr>
           )}
         </tbody>
@@ -2066,9 +2149,43 @@ function stepLabel(value: string) {
   );
 }
 function formatDate(value?: string) {
-  if (!value) return "";
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+  if (!value) return "—";
+  const date = new Date(normalizeTimestamp(value));
+  return Number.isNaN(date.getTime())
+    ? value
+    : new Intl.DateTimeFormat("zh-CN", {
+        timeZone: "Asia/Shanghai",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      }).format(date);
+}
+function normalizeTimestamp(value: string) {
+  return /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+    ? `${value.replace(" ", "T")}Z`
+    : value;
+}
+function timestamp(value: string) {
+  return new Date(normalizeTimestamp(value)).getTime();
+}
+function formatDuration(value?: number | null) {
+  if (value === null || value === undefined || !Number.isFinite(value))
+    return "—";
+  if (value < 1_000) return `${Math.max(0, value)} 毫秒`;
+  return `${(value / 1_000).toFixed(1)} 秒`;
+}
+function jobLabel(value: string) {
+  return (
+    {
+      all: "生产巡检",
+      publish: "商品发布",
+      delivery: "订单发货",
+    }[value] || value
+  );
 }
 function image(p: Product) {
   const source = imageUrls(p)[0] || "";
