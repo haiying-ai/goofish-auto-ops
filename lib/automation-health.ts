@@ -5,10 +5,22 @@ export type AutomationHealthState =
   | "unknown";
 
 export type AutomationRunRecord = {
+  id?: number;
   status: string;
   summary: string;
   startedAt: string;
   finishedAt?: string | null;
+};
+
+export type OperationalEvent = {
+  id: string;
+  kind: "failure" | "recovery";
+  occurredAt: string;
+  title: string;
+  detail: string;
+  requiresManualAction: boolean;
+  action: string;
+  emailStatus: "sent" | "suppressed" | "failed" | "unconfigured";
 };
 
 export type AutomationHealth = {
@@ -126,6 +138,55 @@ export function deriveAutomationHealth(
   };
 }
 
+export function deriveOperationalEvents(
+  runs: AutomationRunRecord[],
+): OperationalEvent[] {
+  return runs.flatMap((run) => {
+    const summary = parseSummary(run.summary);
+    const errors = summaryErrors(summary);
+    const occurredAt = run.finishedAt || run.startedAt;
+    const recoveryAlerts = Number(summary.recoveryAlerts || 0);
+    const sessionRenewed = summary.sessionRenewed;
+    const recoveryEmailError = errors.find((error) =>
+      error.startsWith("保活恢复邮件："),
+    );
+
+    if (recoveryAlerts > 0 || recoveryEmailError) {
+      return [
+        {
+          id: `recovery-${run.id || occurredAt}`,
+          kind: "recovery" as const,
+          occurredAt,
+          title: "闲鱼会话已恢复",
+          detail: recoveryEmailError || "会话校验与自动续期已恢复正常。",
+          requiresManualAction: false,
+          action: "无需人工操作，订单扫描与自动发货已继续。",
+          emailStatus: eventEmailStatus(summary, "recovery", errors),
+        },
+      ];
+    }
+
+    if (sessionRenewed !== false) return [];
+    const detail = errors.find((error) => !error.includes("邮件：")) ||
+      "闲鱼会话校验或自动续期未成功。";
+    const manual = requiresManualLogin([run.summary, ...errors].join(" "));
+    return [
+      {
+        id: `failure-${run.id || occurredAt}`,
+        kind: "failure" as const,
+        occurredAt,
+        title: manual ? "闲鱼登录需要更新" : "闲鱼会话保活暂时失败",
+        detail,
+        requiresManualAction: manual,
+        action: manual
+          ? "需要人工处理：请在系统设置中重新登录闲鱼。"
+          : "暂不需要人工操作，系统会在下一轮自动重试。",
+        emailStatus: eventEmailStatus(summary, "failure", errors),
+      },
+    ];
+  });
+}
+
 function timestamp(value: string) {
   const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
     ? `${value.replace(" ", "T")}Z`
@@ -143,6 +204,23 @@ function parseSummary(value?: string) {
 
 function summaryErrors(summary: Record<string, unknown>) {
   return Array.isArray(summary.errors) ? summary.errors.map(String) : [];
+}
+
+function eventEmailStatus(
+  summary: Record<string, unknown>,
+  kind: "failure" | "recovery",
+  errors: string[],
+): OperationalEvent["emailStatus"] {
+  if (Number(summary[kind === "failure" ? "failureAlerts" : "recoveryAlerts"] || 0) > 0)
+    return "sent";
+  if (summary.emailConfigurationRequired) return "unconfigured";
+  if (
+    errors.some((error) =>
+      error.startsWith(kind === "failure" ? "保活失败邮件：" : "保活恢复邮件："),
+    )
+  )
+    return "failed";
+  return "suppressed";
 }
 
 function requiresManualLogin(message: string) {
