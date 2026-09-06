@@ -62,6 +62,118 @@
   font-weight: 700;
 }
 
+.incident-panel {
+  padding: 0;
+  overflow: hidden;
+}
+
+.incident-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.incident-head h2,
+.incident-head p {
+  margin: 0;
+}
+
+.incident-head h2 {
+  font-size: 15px;
+}
+
+.incident-head p,
+.incident-head > span,
+.incident-empty {
+  color: #7e899b;
+  font-size: 11px;
+}
+
+.incident-head p {
+  margin-top: 5px;
+}
+
+.incident-list article {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 16px;
+  padding: 15px 20px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.incident-list article:last-child {
+  border-bottom: 0;
+}
+
+.incident-status {
+  display: grid;
+  gap: 6px;
+}
+
+.incident-status b,
+.email-state {
+  width: fit-content;
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 10px;
+}
+
+.incident-list .failure .incident-status b {
+  color: #b43a3a;
+  background: #fde8e8;
+}
+
+.incident-list .recovery .incident-status b {
+  color: #16854c;
+  background: #e0f7e9;
+}
+
+.incident-status time,
+.incident-copy p,
+.incident-copy small {
+  color: #7e899b;
+  font-size: 11px;
+}
+
+.incident-copy strong {
+  font-size: 12px;
+}
+
+.incident-copy p {
+  margin: 5px 0;
+  line-height: 1.55;
+}
+
+.incident-copy small {
+  color: #344054;
+  font-weight: 700;
+}
+
+.email-state.sent {
+  color: #16854c;
+  background: #e0f7e9;
+}
+
+.email-state.suppressed {
+  color: #596579;
+  background: #edf0f5;
+}
+
+.email-state.failed,
+.email-state.unconfigured {
+  color: #b43a3a;
+  background: #fde8e8;
+}
+
+.incident-empty {
+  margin: 0;
+  padding: 20px;
+}
+
 .filter-bar {
   padding: 12px 14px;
   margin-bottom: 16px;
@@ -651,6 +763,11 @@
 
   .settings-grid {
     grid-template-columns: 1fr;
+  }
+
+  .incident-list article {
+    grid-template-columns: 1fr;
+    gap: 9px;
   }
 }
 
