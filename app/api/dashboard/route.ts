@@ -3,7 +3,10 @@ import { getDb } from "../../../db";
 import { inventory, jobRuns, orders, products, settings } from "../../../db/schema";
 import { decryptSecret } from "../../../lib/secrets";
 import { requireOwnerAccess } from "../../../lib/access";
-import { deriveAutomationHealth } from "../../../lib/automation-health";
+import {
+  deriveAutomationHealth,
+  deriveOperationalEvents,
+} from "../../../lib/automation-health";
 
 export const dynamic = "force-dynamic";
 
@@ -75,6 +78,7 @@ export async function GET(request: Request) {
       automationHealth: deriveAutomationHealth(recentRuns, {
         recoveryNoticePending: Boolean(alertState[0]?.value),
       }),
+      operationalEvents: deriveOperationalEvents(recentRuns).slice(0, 6),
     });
   } catch (error) {
     return Response.json(
