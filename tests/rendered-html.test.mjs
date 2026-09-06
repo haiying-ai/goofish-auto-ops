@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { registerHooks } from "node:module";
 import test from "node:test";
+import { deriveOperationalEvents } from "../lib/automation-health.ts";
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -472,8 +473,11 @@ test("dashboard reports real production health and safer manual execution", asyn
   assert.match(healthSource, /CRON_STALE_AFTER_MS = 15 \* 60 \* 1000/);
   assert.match(healthSource, /生产 Cron 已停止/);
   assert.match(healthSource, /requiresManualAction/);
+  assert.match(healthSource, /deriveOperationalEvents/);
+  assert.match(healthSource, /重复告警已抑制|suppressed/);
   assert.match(dashboardSource, /eq\(jobRuns\.job, "all"\)/);
   assert.match(dashboardSource, /automationHealth: deriveAutomationHealth/);
+  assert.match(dashboardSource, /operationalEvents: deriveOperationalEvents/);
   assert.match(healthRouteSource, /ok: automationHealth\.state !== "critical"/);
   assert.match(pageSource, /window\.setInterval/);
   assert.match(pageSource, /60_000/);
@@ -481,6 +485,51 @@ test("dashboard reports real production health and safer manual execution", asyn
   assert.match(pageSource, /disabled=\{manualRunning\}/);
   assert.match(pageSource, /timeZone: "Asia\/Shanghai"/);
   assert.match(pageSource, /本轮耗时/);
+  assert.match(pageSource, /最近告警与恢复/);
+  assert.match(pageSource, /运营告警邮件/);
+  assert.match(pageSource, /失败告警/);
+  assert.match(pageSource, /恢复通知/);
   assert.match(pageSource, /deleteDraft=\{deleteDraft\}/);
   assert.match(pageSource, /deleteDraft: \(product: Product\) => Promise<boolean>/);
+});
+
+test("session incident history distinguishes email and intervention states", () => {
+  const events = deriveOperationalEvents([
+    {
+      id: 3,
+      status: "success",
+      startedAt: "2026-09-06T05:40:00.000Z",
+      finishedAt: "2026-09-06T05:40:05.000Z",
+      summary: JSON.stringify({ sessionRenewed: true, recoveryAlerts: 1 }),
+    },
+    {
+      id: 2,
+      status: "failed",
+      startedAt: "2026-09-06T05:35:00.000Z",
+      finishedAt: "2026-09-06T05:35:07.000Z",
+      summary: JSON.stringify({
+        sessionRenewed: false,
+        failureAlerts: 1,
+        errors: ["请求超时（7000ms）"],
+      }),
+    },
+    {
+      id: 1,
+      status: "failed",
+      startedAt: "2026-09-06T05:30:00.000Z",
+      finishedAt: "2026-09-06T05:30:02.000Z",
+      summary: JSON.stringify({
+        sessionRenewed: false,
+        failureAlerts: 1,
+        errors: ["AUTH_REQUIRED：登录已失效"],
+      }),
+    },
+  ]);
+
+  assert.equal(events.length, 3);
+  assert.equal(events[0].kind, "recovery");
+  assert.equal(events[0].emailStatus, "sent");
+  assert.equal(events[0].requiresManualAction, false);
+  assert.equal(events[1].requiresManualAction, false);
+  assert.equal(events[2].requiresManualAction, true);
 });
