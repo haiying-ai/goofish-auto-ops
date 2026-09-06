@@ -150,6 +150,16 @@ type AutomationHealth = {
   consecutiveFailures: number;
   sessionRenewed: boolean | null;
 };
+type OperationalEvent = {
+  id: string;
+  kind: "failure" | "recovery";
+  occurredAt: string;
+  title: string;
+  detail: string;
+  requiresManualAction: boolean;
+  action: string;
+  emailStatus: "sent" | "suppressed" | "failed" | "unconfigured";
+};
 const nav = [
   "总览",
   "商品上架",
@@ -177,6 +187,7 @@ export default function Home() {
     [account, setAccount] = useState<Account | null>(null),
     [automationHealth, setAutomationHealth] =
       useState<AutomationHealth | null>(null),
+    [operationalEvents, setOperationalEvents] = useState<OperationalEvent[]>([]),
     [session, setSession] = useState<SiteSession | null>(null);
   const json = useCallback(async (url: string, init?: RequestInit) => {
     const r = await fetch(url, { cache: "no-store", ...init }),
@@ -191,6 +202,7 @@ export default function Home() {
       setProducts(d.products);
       setSummary(d.summary);
       setAutomationHealth(d.automationHealth);
+      setOperationalEvents(d.operationalEvents || []);
     } catch (e) {
       setNotice(message(e));
     } finally {
@@ -576,6 +588,7 @@ export default function Home() {
             loading={loading}
             refresh={refresh}
             automationHealth={automationHealth}
+            operationalEvents={operationalEvents}
           />
         )}{" "}
         {active === "商品上架" && (
@@ -658,12 +671,14 @@ function Overview({
   loading,
   refresh,
   automationHealth,
+  operationalEvents,
 }: {
   summary: Summary;
   products: Product[];
   loading: boolean;
   refresh: () => void;
   automationHealth: AutomationHealth | null;
+  operationalEvents: OperationalEvent[];
 }) {
   return (
     <>
@@ -735,6 +750,37 @@ function Overview({
           </div>
         </div>
         <code>POST /api/jobs/run</code>
+      </section>
+      <section className="panel incident-panel">
+        <div className="incident-head">
+          <div>
+            <h2>最近告警与恢复</h2>
+            <p>查看邮件是否送达，以及当时是否需要人工干预。</p>
+          </div>
+          <span>最近 {operationalEvents.length} 条</span>
+        </div>
+        {operationalEvents.length ? (
+          <div className="incident-list">
+            {operationalEvents.map((event) => (
+              <article key={event.id} className={event.kind}>
+                <div className="incident-status">
+                  <b>{event.kind === "failure" ? "失败" : "恢复"}</b>
+                  <time>{formatDate(event.occurredAt)}</time>
+                </div>
+                <div className="incident-copy">
+                  <strong>{event.title}</strong>
+                  <p>{event.detail}</p>
+                  <small>{event.action}</small>
+                </div>
+                <span className={`email-state ${event.emailStatus}`}>
+                  {emailStatusLabel(event.emailStatus)}
+                </span>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="incident-empty">最近没有会话失败或恢复事件。</p>
+        )}
       </section>
     </>
   );
@@ -1927,13 +1973,15 @@ function Settings({
       <section className="panel setting-card">
         <span className={account?.email?.configured ? "ok-dot" : "bad-dot"} />
         <div>
-          <h2>缺配置邮件提醒</h2>
+          <h2>运营告警邮件</h2>
           <p>
             {account?.email?.configured
               ? `已启用 · 收件人 ${account.email.recipient}`
               : `尚未配置 RESEND_API_KEY · 计划收件人 ${account?.email?.recipient || "bingsun2020@163.com"}`}
           </p>
-          <small>同一订单只发送一次，补齐发货配置后下一轮会自动继续处理。</small>
+          <small>
+            会话失败当轮通知，同一连续故障只发一次；恢复后立即通知并重新布防。邮件会明确是否需要人工登录。
+          </small>
         </div>
       </section>
       <section className="panel setting-card">
@@ -2209,11 +2257,29 @@ function formatRunSummary(value: string) {
       `待补配置 ${Number(summary.configurationAlerts || 0)} 单`,
       `邮件 ${Number(summary.emailsSent || 0)} 封`,
     ];
+    if (Number(summary.failureAlerts || 0))
+      parts.push(`失败告警 ${Number(summary.failureAlerts)} 封`);
+    if (Number(summary.recoveryAlerts || 0))
+      parts.push(`恢复通知 ${Number(summary.recoveryAlerts)} 封`);
+    if (summary.emailConfigurationRequired) parts.push("告警邮件未配置");
+    if (
+      Array.isArray(summary.errors) &&
+      summary.errors.some((error) => /保活(?:失败|恢复)邮件：/.test(String(error)))
+    )
+      parts.push("会话邮件发送失败");
     if (Number(summary.failed || 0)) parts.push(`失败 ${summary.failed}`);
     return parts.join(" · ");
   } catch {
     return value;
   }
+}
+function emailStatusLabel(value: OperationalEvent["emailStatus"]) {
+  return {
+    sent: "邮件已发送",
+    suppressed: "重复告警已抑制",
+    failed: "邮件发送失败",
+    unconfigured: "邮件未配置",
+  }[value];
 }
 function subtitle(x: string) {
   return (
