@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: 构建与测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 安装依赖
+        # 项目自带 install-ci.sh：校验可写环境、锁定 tarball 完整性预检，
+        # 再执行一次受限时长的 npm ci，避免重复安装与网络抖动叠加
+        run: npm run install:ci
+
+      - name: 构建并测试
+        # npm test = npm run build && node --test
+        # 部分用例依赖构建产物，必须先 build
+        run: npm test
