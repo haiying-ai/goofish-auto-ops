@@ -6,6 +6,7 @@ body:
     attributes:
       value: |
         提交前请先搜索已有 Issue，避免重复。
+        安全问题请勿在公开 Issue 中讨论，见 [SECURITY.md](https://github.com/haiying-ai/goofish-auto-ops/blob/main/SECURITY.md)。
   - type: textarea
     id: what-happened
     attributes:
