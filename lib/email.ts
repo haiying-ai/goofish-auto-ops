@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 
-const DEFAULT_ALERT_EMAIL = "bingsun2020@163.com";
+const DEFAULT_ALERT_EMAIL = "";
 const DEFAULT_FROM = "闲鱼自动运营 <onboarding@resend.dev>";
 const EMAIL_SEND_TIMEOUT_MS = 5_000;
 
@@ -31,6 +31,13 @@ export async function sendOperationalAlert(input: {
       sent: false,
       configurationRequired: true,
       error: "尚未配置 RESEND_API_KEY",
+    };
+  }
+  if (!status.recipient) {
+    return {
+      sent: false,
+      configurationRequired: true,
+      error: "尚未配置 ALERT_EMAIL（告警收件人）",
     };
   }
   const signal = AbortSignal.timeout(EMAIL_SEND_TIMEOUT_MS);

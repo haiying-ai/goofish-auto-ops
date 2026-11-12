@@ -1977,7 +1977,7 @@ function Settings({
           <p>
             {account?.email?.configured
               ? `已启用 · 收件人 ${account.email.recipient}`
-              : `尚未配置 RESEND_API_KEY · 计划收件人 ${account?.email?.recipient || "bingsun2020@163.com"}`}
+              : `尚未配置 RESEND_API_KEY · 计划收件人 ${account?.email?.recipient || "未配置"}`}
           </p>
           <small>
             会话失败当轮通知，同一连续故障只发一次；恢复后立即通知并重新布防。邮件会明确是否需要人工登录。

@@ -24,7 +24,7 @@
   - `XIANYU_COOKIE`：闲鱼网页端完整 Cookie
   - `CRON_SECRET`：Cron 调用密钥
   - `RESEND_API_KEY`：Resend 免费邮件 API 密钥，用于缺配置告警
-  - `ALERT_EMAIL`：可选，告警收件人；默认 `bingsun2020@163.com`
+  - `ALERT_EMAIL`：告警收件人；未配置时不发送告警邮件（日志会提示 `尚未配置 ALERT_EMAIL`）
   - `ALERT_FROM_EMAIL`：可选，已验证的发件地址；默认使用 Resend 测试发件人
 
 构建：

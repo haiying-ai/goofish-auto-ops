@@ -377,12 +377,13 @@ test("listing payload includes inventory, shipping, pickup, SKU, and original pr
   assert.match(source, /supportFreight/);
 });
 
-test("unconfigured-order alerts default to the requested mailbox", async () => {
+test("unconfigured alerts require an explicit recipient instead of a built-in default", async () => {
   const source = await readFile(
     new URL("../lib/email.ts", import.meta.url),
     "utf8",
   );
-  assert.match(source, /bingsun2020@163\.com/);
+  assert.match(source, /const DEFAULT_ALERT_EMAIL = "";/);
+  assert.match(source, /尚未配置 ALERT_EMAIL/);
   assert.match(source, /Idempotency-Key/);
 });
 
