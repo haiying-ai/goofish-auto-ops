@@ -2,6 +2,11 @@
 
 一个可完整部署到 OpenAI Sites / Cloudflare Workers 的免费闲鱼商品运营面板。本地电脑无需常驻运行。
 
+[![CI](https://github.com/haiying-ai/goofish-auto-ops/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/haiying-ai/goofish-auto-ops/actions/workflows/ci.yml)
+![License](https://img.shields.io/badge/license-MIT-blue)
+![Node](https://img.shields.io/badge/node-%E2%89%A522.13-339933?logo=nodedotjs&logoColor=white)
+![Deploy](https://img.shields.io/badge/Deploy-Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white)
+
 ## 当前能力
 
 - 同步闲鱼账号商品，并对账在售 / 已下架状态
