@@ -124,6 +124,8 @@ tests/          渲染产物断言（npm test）
 
 漏洞报告方式见 [SECURITY.md](SECURITY.md)，请勿用公开 Issue 提交敏感问题。
 
+用对话代理操作这套系统（MCP 接入、安全上架七步、失败处置）见 [docs/agent-workflow.md](docs/agent-workflow.md)。
+
 ## 常见问题
 
 **会不会封号？**
