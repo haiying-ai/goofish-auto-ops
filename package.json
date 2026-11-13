@@ -15,7 +15,7 @@
     "db:generate": "bash scripts/sites-env.sh -- drizzle-kit generate"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.32.0",
     "drizzle-orm": "0.45.2",
     "next": "16.4.1",
     "react": "19.2.9",
